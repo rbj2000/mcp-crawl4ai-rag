@@ -1,0 +1,3 @@
+# Supabase provider requirements
+-r requirements.txt
+supabase==2.15.1

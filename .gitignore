@@ -108,3 +108,16 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+#BMAD structure & webpacks
+.bamd*
+.claude*
+.cursor*
+.gemini*
+.google*
+.openai*
+.anthropic*
+.llama*
+.mistral*
+.mistral*
+webpack*

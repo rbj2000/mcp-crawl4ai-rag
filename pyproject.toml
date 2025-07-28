@@ -8,7 +8,7 @@ dependencies = [
     "crawl4ai==0.6.2",
     "mcp==1.7.1",
     "openai==1.71.0",
-    "dotenv==0.9.9",
+    "python-dotenv>=1.0.0",
     "sentence-transformers>=4.1.0",
     "neo4j>=5.28.1",
     "numpy>=1.24.0",
@@ -19,6 +19,14 @@ dependencies = [
 supabase = ["supabase==2.15.1"]
 pinecone = ["pinecone-client>=3.0.0"]
 weaviate = ["weaviate-client>=4.0.0"]
+testing = [
+    "pytest>=8.0.0",
+    "pytest-docker>=2.0.0",
+    "testcontainers[neo4j]>=4.0.0",
+    "docker>=7.0.0",
+    "requests>=2.31.0",
+    "rich>=13.0.0"
+]
 all = [
     "supabase==2.15.1",
     "pinecone-client>=3.0.0", 

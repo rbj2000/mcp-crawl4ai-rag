@@ -1,0 +1,10 @@
+# Development requirements with all optional dependencies
+-r requirements.txt
+supabase==2.15.1
+pinecone-client>=3.0.0
+weaviate-client>=4.0.0
+
+# Additional development tools
+pre-commit>=3.0.0
+mypy>=1.8.0
+coverage>=7.0.0
