@@ -1,29 +1,75 @@
-<h1 align="center">Crawl4AI RAG MCP Server</h1>
+# MCP Crawl4AI RAG - Database Agnostic
 
-<p align="center">
-  <em>Web Crawling and RAG Capabilities for AI Agents and AI Coding Assistants</em>
-</p>
+A powerful, database-agnostic MCP (Model Context Protocol) server that integrates web crawling with RAG (Retrieval Augmented Generation) capabilities. Built with Crawl4AI for intelligent web scraping and supports multiple vector database backends for flexible deployment.
 
-A powerful implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) integrated with [Crawl4AI](https://crawl4ai.com) and [Supabase](https://supabase.com/) for providing AI agents and AI coding assistants with advanced web crawling and RAG capabilities.
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io/)
 
-With this MCP server, you can <b>scrape anything</b> and then <b>use that knowledge anywhere</b> for RAG.
-
-The primary goal is to bring this MCP server into [Archon](https://github.com/coleam00/Archon) as I evolve it to be more of a knowledge engine for AI coding assistants to build AI agents. This first version of the Crawl4AI/RAG MCP server will be improved upon greatly soon, especially making it more configurable so you can use different embedding models and run everything locally with Ollama.
-
-Consider this GitHub repository a testbed, hence why I haven't been super actively address issues and pull requests yet. I certainly will though as I bring this into Archon V2!
+With this MCP server, you can <b>scrape anything</b> and then <b>use that knowledge anywhere</b> for RAG across **5 different vector database backends**.
 
 ## Overview
 
-This MCP server provides tools that enable AI agents to crawl websites, store content in a vector database (Supabase), and perform RAG over the crawled content. It follows the best practices for building MCP servers based on the [Mem0 MCP server template](https://github.com/coleam00/mcp-mem0/) I provided on my channel previously.
+## 🚀 Features
 
-The server includes several advanced RAG strategies that can be enabled to enhance retrieval quality:
-- **Contextual Embeddings** for enriched semantic understanding
-- **Hybrid Search** combining vector and keyword search
-- **Agentic RAG** for specialized code example extraction
-- **Reranking** for improved result relevance using cross-encoder models
-- **Knowledge Graph** for AI hallucination detection and repository code analysis
+### **Multi-Database Support**
+- **Supabase**: Production-ready with pgvector support
+- **SQLite**: Local development with built-in vector similarity
+- **Pinecone**: High-performance managed vector database
+- **Neo4j**: Vector database + knowledge graph capabilities
+- **Weaviate**: Enterprise-grade vector search (coming soon)
 
-See the [Configuration section](#configuration) below for details on how to enable and configure these strategies.
+### **Advanced RAG Strategies**
+- **Contextual Embeddings**: LLM-enhanced chunk understanding
+- **Hybrid Search**: Vector similarity + keyword search
+- **Agentic RAG**: Separate code example indexing
+- **Cross-Encoder Reranking**: Improved result relevance
+- **Knowledge Graph Integration**: AI hallucination detection
+
+### **Intelligent Web Crawling**
+- **Smart URL Detection**: Automatically handles sitemaps, text files, and web pages
+- **Content Processing**: Markdown extraction with intelligent chunking
+- **Code Block Extraction**: Separate indexing of code examples
+- **Batch Processing**: Efficient parallel crawling and embedding
+
+## 🎯 Quick Start
+
+### Option 1: Docker (Recommended)
+
+```bash
+# Clone the repository
+git clone https://github.com/rbj2000/mcp-crawl4ai-rag.git
+cd mcp-crawl4ai-rag
+
+# Copy environment template
+cp .env.example .env
+# Edit .env with your configuration
+
+# Deploy with your preferred database
+docker-compose --profile supabase up    # Supabase
+docker-compose --profile sqlite up      # SQLite  
+docker-compose --profile pinecone up    # Pinecone
+docker-compose --profile neo4j up       # Neo4j
+```
+
+### Option 2: Local Development
+
+```bash
+# Install dependencies
+uv pip install -e .                    # Basic installation
+uv pip install -e ".[supabase]"       # With Supabase support
+uv pip install -e ".[all]"            # All database providers
+
+# Setup Crawl4AI
+crawl4ai-setup
+
+# Configure environment
+export VECTOR_DB_PROVIDER=sqlite       # or supabase, pinecone, neo4j_vector
+export OPENAI_API_KEY=your_key
+
+# Run the server
+python src/crawl4ai_mcp_refactored.py
+```
 
 ## Vision
 

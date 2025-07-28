@@ -1,0 +1,155 @@
+version: '3.8'
+
+services:
+  # Supabase deployment
+  mcp-crawl4ai-supabase:
+    build: 
+      context: .
+      args:
+        VECTOR_DB_PROVIDER: supabase
+    environment:
+      - VECTOR_DB_PROVIDER=supabase
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - MODEL_CHOICE=${MODEL_CHOICE}
+      - USE_CONTEXTUAL_EMBEDDINGS=${USE_CONTEXTUAL_EMBEDDINGS:-false}
+      - USE_HYBRID_SEARCH=${USE_HYBRID_SEARCH:-false}
+      - USE_AGENTIC_RAG=${USE_AGENTIC_RAG:-false}
+      - USE_RERANKING=${USE_RERANKING:-false}
+      - USE_KNOWLEDGE_GRAPH=${USE_KNOWLEDGE_GRAPH:-false}
+    ports:
+      - "8051:8051"
+    profiles: ["supabase"]
+
+  # SQLite deployment (local development)
+  mcp-crawl4ai-sqlite:
+    build:
+      context: .
+      args:
+        VECTOR_DB_PROVIDER: sqlite
+    environment:
+      - VECTOR_DB_PROVIDER=sqlite
+      - SQLITE_DB_PATH=/data/vector_db.sqlite
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - MODEL_CHOICE=${MODEL_CHOICE}
+      - USE_CONTEXTUAL_EMBEDDINGS=${USE_CONTEXTUAL_EMBEDDINGS:-false}
+      - USE_HYBRID_SEARCH=${USE_HYBRID_SEARCH:-false}
+      - USE_AGENTIC_RAG=${USE_AGENTIC_RAG:-false}
+      - USE_RERANKING=${USE_RERANKING:-false}
+      - USE_KNOWLEDGE_GRAPH=${USE_KNOWLEDGE_GRAPH:-false}
+    volumes:
+      - ./data:/data
+    ports:
+      - "8052:8051"
+    profiles: ["sqlite"]
+
+  # Weaviate deployment
+  mcp-crawl4ai-weaviate:
+    build:
+      context: .
+      args:
+        VECTOR_DB_PROVIDER: weaviate
+    environment:
+      - VECTOR_DB_PROVIDER=weaviate
+      - WEAVIATE_URL=http://weaviate:8080
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - MODEL_CHOICE=${MODEL_CHOICE}
+      - USE_CONTEXTUAL_EMBEDDINGS=${USE_CONTEXTUAL_EMBEDDINGS:-false}
+      - USE_HYBRID_SEARCH=${USE_HYBRID_SEARCH:-false}
+      - USE_AGENTIC_RAG=${USE_AGENTIC_RAG:-false}
+      - USE_RERANKING=${USE_RERANKING:-false}
+      - USE_KNOWLEDGE_GRAPH=${USE_KNOWLEDGE_GRAPH:-false}
+    depends_on:
+      - weaviate
+    ports:
+      - "8053:8051"
+    profiles: ["weaviate"]
+
+  weaviate:
+    image: semitechnologies/weaviate:latest
+    environment:
+      - QUERY_DEFAULTS_LIMIT=25
+      - AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true
+      - PERSISTENCE_DATA_PATH=/var/lib/weaviate
+      - ENABLE_MODULES=text2vec-openai
+      - OPENAI_APIKEY=${OPENAI_API_KEY}
+    ports:
+      - "8080:8080"
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    profiles: ["weaviate"]
+
+  # Pinecone deployment
+  mcp-crawl4ai-pinecone:
+    build:
+      context: .
+      args:
+        VECTOR_DB_PROVIDER: pinecone
+    environment:
+      - VECTOR_DB_PROVIDER=pinecone
+      - PINECONE_API_KEY=${PINECONE_API_KEY}
+      - PINECONE_ENVIRONMENT=${PINECONE_ENVIRONMENT}
+      - PINECONE_INDEX_NAME=${PINECONE_INDEX_NAME}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - MODEL_CHOICE=${MODEL_CHOICE}
+      - USE_CONTEXTUAL_EMBEDDINGS=${USE_CONTEXTUAL_EMBEDDINGS:-false}
+      - USE_HYBRID_SEARCH=${USE_HYBRID_SEARCH:-false}
+      - USE_AGENTIC_RAG=${USE_AGENTIC_RAG:-false}
+      - USE_RERANKING=${USE_RERANKING:-false}
+      - USE_KNOWLEDGE_GRAPH=${USE_KNOWLEDGE_GRAPH:-false}
+    ports:
+      - "8054:8051"
+    profiles: ["pinecone"]
+
+  # Neo4j deployment (vector DB + knowledge graph)
+  mcp-crawl4ai-neo4j:
+    build:
+      context: .
+      args:
+        VECTOR_DB_PROVIDER: all  # Include all dependencies since Neo4j already included
+    environment:
+      - VECTOR_DB_PROVIDER=neo4j_vector
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=neo4j_password
+      - NEO4J_DATABASE=neo4j
+      # Use same Neo4j instance for knowledge graph
+      - KG_NEO4J_URI=bolt://neo4j:7687
+      - KG_NEO4J_USER=neo4j
+      - KG_NEO4J_PASSWORD=neo4j_password
+      - KG_NEO4J_DATABASE=neo4j
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - MODEL_CHOICE=${MODEL_CHOICE}
+      - USE_CONTEXTUAL_EMBEDDINGS=${USE_CONTEXTUAL_EMBEDDINGS:-false}
+      - USE_HYBRID_SEARCH=${USE_HYBRID_SEARCH:-true}  # Neo4j supports good hybrid search
+      - USE_AGENTIC_RAG=${USE_AGENTIC_RAG:-false}
+      - USE_RERANKING=${USE_RERANKING:-false}
+      - USE_KNOWLEDGE_GRAPH=${USE_KNOWLEDGE_GRAPH:-true}  # Enable by default with Neo4j
+    depends_on:
+      - neo4j
+    ports:
+      - "8055:8051"
+    profiles: ["neo4j"]
+
+  neo4j:
+    image: neo4j:5.15-community
+    environment:
+      - NEO4J_AUTH=neo4j/neo4j_password
+      - NEO4J_PLUGINS=["apoc", "apoc-extended"]
+      - NEO4J_db_tx__log_rotation_retention__policy=1 days
+      # Enable vector search capabilities
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*,gds.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*,gds.*
+    ports:
+      - "7474:7474"  # Web interface
+      - "7687:7687"  # Bolt protocol
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    profiles: ["neo4j"]
+
+volumes:
+  weaviate_data:
+  neo4j_data:
+  neo4j_logs:
