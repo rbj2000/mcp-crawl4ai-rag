@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.12]
+    
+    services:
+      neo4j:
+        image: neo4j:5.15-community
+        env:
+          NEO4J_AUTH: neo4j/test_password
+        ports:
+          - 7687:7687
+        options: >-
+          --health-cmd="cypher-shell -u neo4j -p test_password 'RETURN 1'"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install uv
+      run: pip install uv
+    
+    - name: Install dependencies
+      run: |
+        uv pip install --system -e ".[all]"
+        crawl4ai-setup
+    
+    - name: Run tests
+      env:
+        TEST_NEO4J_URI: bolt://localhost:7687
+        TEST_NEO4J_USER: neo4j
+        TEST_NEO4J_PASSWORD: test_password
+      run: |
+        pytest tests/ -v
+    
+    - name: Test SQLite provider specifically
+      run: |
+        pytest tests/test_database_providers.py::TestSQLiteProvider -v
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.12
+    
+    - name: Install linting tools
+      run: |
+        pip install ruff black
+    
+    - name: Run ruff
+      run: ruff check src/ tests/
+    
+    - name: Check formatting with black
+      run: black --check src/ tests/
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Build SQLite Docker image
+      run: |
+        docker build --build-arg VECTOR_DB_PROVIDER=sqlite -t mcp-crawl4ai-rag:sqlite .
+    
+    - name: Test SQLite Docker image
+      run: |
+        docker run --rm -e VECTOR_DB_PROVIDER=sqlite -e OPENAI_API_KEY=test mcp-crawl4ai-rag:sqlite python -c "from src.database.factory import DatabaseProviderFactory; print('Import successful')"
