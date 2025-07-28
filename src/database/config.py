@@ -15,7 +15,8 @@ class DatabaseConfig:
         try:
             provider = DatabaseProvider(provider_name)
         except ValueError:
-            raise ValueError(f"Unsupported database provider: {provider_name}")
+            available_providers = [p.value for p in DatabaseProvider]
+            raise ValueError(f"Unsupported database provider: {provider_name}. Available: {available_providers}")
         
         config = cls._get_provider_config(provider)
         cls._validate_config(provider, config)
