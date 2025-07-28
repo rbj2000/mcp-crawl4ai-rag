@@ -4,6 +4,7 @@ Uses pytest-docker for robust container testing
 """
 import pytest
 import requests
+import subprocess
 import time
 import json
 import docker
@@ -173,7 +174,6 @@ class TestNeo4jProvider:
     @pytest.fixture(scope="class")
     def neo4j_services(self, docker_compose_file):
         """Start Neo4j services using docker-compose"""
-        import subprocess
         
         # Start services
         subprocess.run([
