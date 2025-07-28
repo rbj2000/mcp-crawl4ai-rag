@@ -223,6 +223,157 @@ mcp = FastMCP(
     port=os.getenv("PORT", "8051")
 )
 
+# Note: FastMCP doesn't support HTTP endpoints like Flask/FastAPI
+# Health checking will be done through MCP tools instead
+
+@mcp.tool()
+async def health_check(ctx: Context) -> str:
+    """
+    Check the health status of all server components (AI provider, database, Neo4j).
+    
+    Returns a comprehensive health report showing the status of:
+    - AI Provider (OpenAI/Ollama) connectivity
+    - Database connection (Supabase/SQLite)
+    - Neo4j connection (if knowledge graph is enabled)
+    - Overall system health
+    
+    Returns:
+        JSON string with detailed health status of all components
+    """
+    import json
+    
+    health_status = {
+        "status": "healthy",
+        "service": "mcp-crawl4ai-rag", 
+        "timestamp": asyncio.get_event_loop().time(),
+        "components": {}
+    }
+    
+    # Check AI Provider (OpenAI/Ollama)
+    try:
+        ai_provider = os.getenv("AI_PROVIDER", "openai")
+        if ai_provider == "ollama":
+            ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+            response = requests.get(f"{ollama_url}/api/tags", timeout=5)
+            if response.status_code == 200:
+                models = response.json().get('models', [])
+                health_status["components"]["ai_provider"] = {
+                    "status": "healthy",
+                    "provider": "ollama",
+                    "url": ollama_url,
+                    "models_available": len(models),
+                    "embedding_model": os.getenv("OLLAMA_EMBEDDING_MODEL", "not_set"),
+                    "llm_model": os.getenv("OLLAMA_LLM_MODEL", "not_set")
+                }
+            else:
+                health_status["components"]["ai_provider"] = {
+                    "status": "unhealthy",
+                    "provider": "ollama",
+                    "error": f"HTTP {response.status_code}"
+                }
+        elif ai_provider == "openai":
+            api_key = os.getenv("OPENAI_API_KEY")
+            if api_key and api_key != "your_openai_api_key_here":
+                health_status["components"]["ai_provider"] = {
+                    "status": "configured",
+                    "provider": "openai",
+                    "message": "API key configured"
+                }
+            else:
+                health_status["components"]["ai_provider"] = {
+                    "status": "not_configured",
+                    "provider": "openai",
+                    "error": "API key not set"
+                }
+    except Exception as e:
+        health_status["components"]["ai_provider"] = {
+            "status": "unhealthy",
+            "error": f"Check failed: {str(e)}"
+        }
+    
+    # Check Database
+    try:
+        db_provider = os.getenv("VECTOR_DB_PROVIDER", "supabase")
+        if db_provider == "sqlite":
+            sqlite_path = os.getenv("SQLITE_DB_PATH", "./local_test.db")
+            if os.path.exists(sqlite_path):
+                health_status["components"]["database"] = {
+                    "status": "healthy",
+                    "provider": "sqlite",
+                    "path": sqlite_path
+                }
+            else:
+                health_status["components"]["database"] = {
+                    "status": "healthy",
+                    "provider": "sqlite", 
+                    "path": sqlite_path,
+                    "note": "Database will be created on first use"
+                }
+        elif db_provider == "supabase":
+            if os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_SERVICE_KEY"):
+                client = get_supabase_client()
+                result = client.table('crawled_pages').select('*').limit(1).execute()
+                health_status["components"]["database"] = {
+                    "status": "healthy",
+                    "provider": "supabase",
+                    "message": "Connected successfully"
+                }
+            else:
+                health_status["components"]["database"] = {
+                    "status": "not_configured",
+                    "provider": "supabase",
+                    "error": "Missing credentials"
+                }
+    except Exception as e:
+        health_status["components"]["database"] = {
+            "status": "unhealthy",
+            "error": f"Connection failed: {str(e)}"
+        }
+    
+    # Check Neo4j (if enabled)
+    try:
+        if os.getenv("USE_KNOWLEDGE_GRAPH", "false").lower() == "true":
+            from neo4j import GraphDatabase
+            neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+            neo4j_user = os.getenv("NEO4J_USER", "neo4j")
+            neo4j_password = os.getenv("NEO4J_PASSWORD", "")
+            
+            driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+            with driver.session() as session:
+                result = session.run("RETURN 1 as test")
+                result.single()
+            driver.close()
+            
+            health_status["components"]["neo4j"] = {
+                "status": "healthy",
+                "uri": neo4j_uri,
+                "message": "Connected successfully"
+            }
+        else:
+            health_status["components"]["neo4j"] = {
+                "status": "disabled",
+                "message": "Knowledge graph features disabled"
+            }
+    except Exception as e:
+        health_status["components"]["neo4j"] = {
+            "status": "unhealthy",
+            "error": f"Connection failed: {str(e)}"
+        }
+    
+    # Overall health assessment
+    unhealthy_components = [
+        name for name, component in health_status["components"].items() 
+        if component.get("status") == "unhealthy"
+    ]
+    
+    if unhealthy_components:
+        health_status["status"] = "degraded"
+        health_status["message"] = f"Unhealthy components: {', '.join(unhealthy_components)}"
+    else:
+        health_status["message"] = "All systems operational"
+    
+    return json.dumps(health_status, indent=2)
+
 def rerank_results(model: CrossEncoder, query: str, results: List[Dict[str, Any]], content_key: str = "content") -> List[Dict[str, Any]]:
     """
     Rerank search results using a cross-encoder model.

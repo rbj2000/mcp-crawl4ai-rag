@@ -1,0 +1,415 @@
+name: Ollama AI Provider Deployment Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'docker-compose*.yml'
+      - 'Dockerfile*'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'docker-compose*.yml'
+      - 'Dockerfile*'
+  workflow_dispatch:
+    inputs:
+      test_providers:
+        description: 'Providers to test (openai,ollama,all)'
+        required: false
+        default: 'all'
+      skip_ollama_tests:
+        description: 'Skip Ollama integration tests'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      source-changed: ${{ steps.changes.outputs.source }}
+      tests-changed: ${{ steps.changes.outputs.tests }}
+      docker-changed: ${{ steps.changes.outputs.docker }}
+      deploy-needed: ${{ steps.changes.outputs.deploy }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - uses: dorny/paths-filter@v2
+        id: changes
+        with:
+          filters: |
+            source:
+              - 'src/**'
+              - 'knowledge_graphs/**'
+              - 'pyproject.toml'
+              - 'requirements*.txt'
+            tests:
+              - 'tests/**'
+            docker:
+              - 'Dockerfile*'
+              - 'docker-compose*.yml'
+              - '.dockerignore'
+            deploy:
+              - 'src/**'
+              - 'docker-compose*.yml'
+              - 'Dockerfile*'
+              - 'deployment/**'
+
+  lint-and-format:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.source-changed == 'true' || needs.detect-changes.outputs.tests-changed == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install uv
+        run: pip install uv
+      
+      - name: Install dependencies
+        run: |
+          uv pip install --system -e ".[dev]" || uv pip install --system -e .
+          uv pip install --system flake8 black isort mypy
+      
+      - name: Format check
+        run: |
+          black --check --diff src/ tests/
+          isort --check-only --diff src/ tests/
+      
+      - name: Lint check
+        run: |
+          flake8 src/ tests/ --max-line-length=100 --ignore=E203,W503
+      
+      - name: Type check
+        run: |
+          mypy src/ --ignore-missing-imports || true
+
+  test-matrix:
+    name: Test Matrix
+    runs-on: ubuntu-latest
+    needs: [detect-changes, lint-and-format]
+    if: always() && (needs.detect-changes.outputs.source-changed == 'true' || needs.detect-changes.outputs.tests-changed == 'true')
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [openai, ollama]
+        database: [sqlite, supabase]
+        python-version: ['3.11', '3.12']
+        exclude:
+          # Skip certain combinations for efficiency
+          - provider: ollama
+            python-version: '3.11'
+    
+    env:
+      # OpenAI Configuration
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      MODEL_CHOICE: gpt-4o-mini
+      
+      # AI Provider Selection
+      AI_PROVIDER: ${{ matrix.provider }}
+      EMBEDDING_PROVIDER: ${{ matrix.provider }}
+      LLM_PROVIDER: ${{ matrix.provider }}
+      
+      # Ollama Configuration
+      OLLAMA_BASE_URL: http://localhost:11434
+      OLLAMA_EMBEDDING_MODEL: nomic-embed-text
+      OLLAMA_LLM_MODEL: llama3.2:1b
+      OLLAMA_EMBEDDING_DIMENSION: 768
+      
+      # Database Configuration
+      VECTOR_DB_PROVIDER: ${{ matrix.database }}
+      SQLITE_DB_PATH: ./test_vector_db.sqlite
+      EMBEDDING_DIMENSION: 768
+      
+      # Test Configuration
+      SKIP_OLLAMA_TESTS: ${{ matrix.provider != 'ollama' && 'true' || 'false' }}
+      
+      # RAG Features
+      USE_CONTEXTUAL_EMBEDDINGS: true
+      USE_HYBRID_SEARCH: false
+      USE_AGENTIC_RAG: true
+      USE_RERANKING: false
+      USE_KNOWLEDGE_GRAPH: false
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      
+      - name: Cache Python dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml', '**/uv.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ matrix.python-version }}-
+      
+      - name: Install uv
+        run: pip install uv
+      
+      - name: Install dependencies
+        run: |
+          uv pip install --system -e ".[all]"
+          uv pip install --system pytest pytest-asyncio pytest-mock pytest-timeout
+      
+      - name: Setup Ollama (if needed)
+        if: matrix.provider == 'ollama'
+        run: |
+          # Download and install Ollama
+          curl -fsSL https://ollama.ai/install.sh | sh
+          
+          # Start Ollama service
+          ollama serve &
+          sleep 10
+          
+          # Pull required models
+          ollama pull ${{ env.OLLAMA_EMBEDDING_MODEL }}
+          ollama pull ${{ env.OLLAMA_LLM_MODEL }}
+          
+          # Verify installation
+          ollama list
+      
+      - name: Setup Test Database
+        if: matrix.database == 'supabase'
+        run: |
+          # For now, use SQLite for CI testing
+          # In production, this would connect to test Supabase instance
+          export VECTOR_DB_PROVIDER=sqlite
+          export SQLITE_DB_PATH=./ci_test_db.sqlite
+      
+      - name: Run Provider-Specific Tests
+        timeout-minutes: 30
+        run: |
+          if [ "${{ matrix.provider }}" = "openai" ]; then
+            pytest tests/test_ai_providers.py -v -k "openai" --timeout=300
+          elif [ "${{ matrix.provider }}" = "ollama" ]; then
+            pytest tests/test_ollama_integration.py -v --timeout=600
+            pytest tests/test_ai_providers.py -v -k "ollama" --timeout=300
+          fi
+      
+      - name: Run Database Integration Tests
+        timeout-minutes: 15
+        run: |
+          pytest tests/test_database_providers.py -v -k "${{ matrix.database }}" --timeout=300
+      
+      - name: Run Epic Story Tests
+        timeout-minutes: 20
+        run: |
+          pytest tests/test_epic_stories.py -v --timeout=600
+      
+      - name: Performance Comparison Tests
+        if: matrix.provider == 'ollama' && matrix.python-version == '3.12'
+        timeout-minutes: 25
+        run: |
+          pytest tests/test_performance_comparison.py -v --timeout=900
+      
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: test-results-${{ matrix.provider }}-${{ matrix.database }}-py${{ matrix.python-version }}
+          path: |
+            pytest.xml
+            test-output.log
+            .coverage
+
+  docker-build-test:
+    name: Docker Build & Test
+    runs-on: ubuntu-latest
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.docker-changed == 'true' || needs.detect-changes.outputs.source-changed == 'true'
+    strategy:
+      matrix:
+        profile: [openai-sqlite, ollama-sqlite, ollama-full]
+        include:
+          - profile: openai-sqlite
+            compose_profiles: "sqlite"
+            ai_provider: "openai"
+            test_suite: "basic"
+          - profile: ollama-sqlite
+            compose_profiles: "sqlite,ollama"
+            ai_provider: "ollama"
+            test_suite: "ollama"
+          - profile: ollama-full
+            compose_profiles: "ollama,neo4j"
+            ai_provider: "ollama"
+            test_suite: "full"
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Log in to Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+      
+      - name: Build Docker Images
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VECTOR_DB_PROVIDER=all
+            AI_PROVIDER=${{ matrix.ai_provider }}
+      
+      - name: Create Test Environment
+        run: |
+          cp .env.example .env.test
+          echo "AI_PROVIDER=${{ matrix.ai_provider }}" >> .env.test
+          echo "TEST_SUITE=${{ matrix.test_suite }}" >> .env.test
+          echo "COMPOSE_PROFILES=${{ matrix.compose_profiles }}" >> .env.test
+      
+      - name: Run Docker Integration Tests
+        timeout-minutes: 20
+        run: |
+          export COMPOSE_PROFILES="${{ matrix.compose_profiles }}"
+          docker-compose --profile "${{ matrix.compose_profiles }}" up -d
+          
+          # Wait for services to be ready
+          sleep 30
+          
+          # Run integration tests
+          python scripts/test_providers_locally.py --provider ${{ matrix.ai_provider }}
+          
+          # Check service health
+          docker-compose --profile "${{ matrix.compose_profiles }}" ps
+          
+          # Cleanup
+          docker-compose --profile "${{ matrix.compose_profiles }}" down -v
+      
+      - name: Push Images (on main branch)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VECTOR_DB_PROVIDER=all
+            AI_PROVIDER=${{ matrix.ai_provider }}
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: docker-build-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+      
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  deployment-validation:
+    name: Deployment Validation
+    runs-on: ubuntu-latest
+    needs: [test-matrix, docker-build-test]
+    if: needs.detect-changes.outputs.deploy-needed == 'true'
+    strategy:
+      matrix:
+        environment: [staging, production]
+        exclude:
+          - environment: production
+            # Only deploy to production on main branch
+        include:
+          - environment: staging
+            deploy_condition: true
+          - environment: production
+            deploy_condition: ${{ github.ref == 'refs/heads/main' }}
+
+    environment: ${{ matrix.environment }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Validate Deployment Configuration
+        run: |
+          # Validate docker-compose files
+          docker-compose config
+          
+          # Validate environment templates
+          python deployment/scripts/validate_config.py --env ${{ matrix.environment }}
+      
+      - name: Simulate Deployment
+        run: |
+          # Run deployment simulation
+          python deployment/scripts/deploy.py --dry-run --env ${{ matrix.environment }}
+      
+      - name: Health Check Simulation
+        run: |
+          # Simulate health checks
+          python deployment/scripts/health_check.py --simulate --env ${{ matrix.environment }}
+
+  notify:
+    name: Notification
+    runs-on: ubuntu-latest
+    needs: [test-matrix, docker-build-test, deployment-validation]
+    if: always()
+    steps:
+      - name: Notify Success
+        if: needs.test-matrix.result == 'success' && needs.docker-build-test.result == 'success'
+        run: |
+          echo "✅ All tests passed successfully!"
+          echo "OpenAI and Ollama providers are working correctly."
+      
+      - name: Notify Failure
+        if: needs.test-matrix.result == 'failure' || needs.docker-build-test.result == 'failure'
+        run: |
+          echo "❌ Some tests failed!"
+          echo "Please check the test results and fix any issues."
+          exit 1
