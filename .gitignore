@@ -109,8 +109,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-#BMAD structure & webpacks
-.bamd*
+# BMAD structure & webpacks
+.bmad*
 .claude*
 .cursor*
 .gemini*
@@ -119,5 +119,13 @@ yarn-error.log*
 .anthropic*
 .llama*
 .mistral*
-.mistral*
 webpack*
+
+# Test output files  
+/tmp/mcp_server.log
+docker_test_results.json
+
+# Python cache (additional patterns)
+**/__pycache__/
+**/*.pyc
+**/*.pyo
