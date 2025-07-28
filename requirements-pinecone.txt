@@ -1,0 +1,3 @@
+# Pinecone provider requirements
+-r requirements.txt
+pinecone-client>=3.0.0

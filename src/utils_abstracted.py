@@ -5,18 +5,34 @@ import os
 import concurrent.futures
 from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import urlparse
-import openai
 import re
 import time
 
 from database.base import VectorDatabaseProvider, DocumentChunk, CodeExample
+from ai_providers.config import AIProviderConfig
+from ai_providers.factory import AIProviderFactory
+from ai_providers.base import EmbeddingProvider
 
-# Load OpenAI API key for embeddings
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Initialize AI provider for embeddings
+_ai_provider_config = None
+_embedding_provider = None
 
-def create_embeddings_batch(texts: List[str]) -> List[List[float]]:
+def _get_embedding_provider() -> EmbeddingProvider:
+    """Get or create the embedding provider instance"""
+    global _ai_provider_config, _embedding_provider
+    
+    if not _embedding_provider:
+        _ai_provider_config = AIProviderConfig.from_env()
+        _embedding_provider = AIProviderFactory.create_embedding_provider(
+            _ai_provider_config.provider, 
+            _ai_provider_config.config
+        )
+    
+    return _embedding_provider
+
+async def create_embeddings_batch(texts: List[str]) -> List[List[float]]:
     """
-    Create embeddings for multiple texts in a single API call.
+    Create embeddings for multiple texts using the configured AI provider.
     
     Args:
         texts: List of texts to create embeddings for
@@ -27,48 +43,40 @@ def create_embeddings_batch(texts: List[str]) -> List[List[float]]:
     if not texts:
         return []
     
-    max_retries = 3
-    retry_delay = 1.0  # Start with 1 second delay
+    provider = _get_embedding_provider()
     
-    for retry in range(max_retries):
-        try:
-            response = openai.embeddings.create(
-                model="text-embedding-3-small", # Hardcoding embedding model for now, will change this later to be more dynamic
-                input=texts
-            )
-            return [item.embedding for item in response.data]
-        except Exception as e:
-            if retry < max_retries - 1:
-                print(f"Error creating batch embeddings (attempt {retry + 1}/{max_retries}): {e}")
-                print(f"Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
-                retry_delay *= 2  # Exponential backoff
-            else:
-                print(f"Failed to create batch embeddings after {max_retries} attempts: {e}")
-                # Try creating embeddings one by one as fallback
-                print("Attempting to create embeddings individually...")
-                embeddings = []
-                successful_count = 0
-                
-                for i, text in enumerate(texts):
-                    try:
-                        individual_response = openai.embeddings.create(
-                            model="text-embedding-3-small",
-                            input=[text]
-                        )
-                        embeddings.append(individual_response.data[0].embedding)
-                        successful_count += 1
-                    except Exception as individual_error:
-                        print(f"Failed to create embedding for text {i}: {individual_error}")
-                        # Add zero embedding as fallback
-                        embeddings.append([0.0] * 1536)
-                
-                print(f"Successfully created {successful_count}/{len(texts)} embeddings individually")
-                return embeddings
+    try:
+        # Use the provider's batch embedding method
+        results = await provider.create_embeddings_batch(texts)
+        return [result.embedding for result in results]
+    except Exception as e:
+        print(f"Failed to create batch embeddings: {e}")
+        # Try creating embeddings one by one as fallback
+        print("Attempting to create embeddings individually...")
+        embeddings = []
+        successful_count = 0
+        
+        for i, text in enumerate(texts):
+            try:
+                result = await provider.create_embedding(text)
+                embeddings.append(result.embedding)
+                successful_count += 1
+            except Exception as individual_error:
+                print(f"Failed to create embedding for text {i}: {individual_error}")
+                # Get embedding dimensions from provider for zero fallback
+                try:
+                    dimensions = provider.get_embedding_dimensions()
+                    embeddings.append([0.0] * dimensions)
+                except:
+                    # Fallback to common dimension
+                    embeddings.append([0.0] * 1024)
+        
+        print(f"Successfully created {successful_count}/{len(texts)} embeddings individually")
+        return embeddings
 
-def create_embedding(text: str) -> List[float]:
+async def create_embedding(text: str) -> List[float]:
     """
-    Create an embedding for a single text using OpenAI's API.
+    Create an embedding for a single text using the configured AI provider.
     
     Args:
         text: Text to create an embedding for
@@ -77,12 +85,18 @@ def create_embedding(text: str) -> List[float]:
         List of floats representing the embedding
     """
     try:
-        embeddings = create_embeddings_batch([text])
-        return embeddings[0] if embeddings else [0.0] * 1536
+        provider = _get_embedding_provider()
+        result = await provider.create_embedding(text)
+        return result.embedding
     except Exception as e:
         print(f"Error creating embedding: {e}")
-        # Return empty embedding if there's an error
-        return [0.0] * 1536
+        # Get dimensions for zero fallback
+        try:
+            provider = _get_embedding_provider()
+            dimensions = provider.get_embedding_dimensions()
+            return [0.0] * dimensions
+        except:
+            return [0.0] * 1024
 
 def generate_contextual_embedding(full_document: str, chunk: str) -> Tuple[str, bool]:
     """
@@ -176,7 +190,7 @@ async def add_documents_to_database(
         processed_contents = contents
     
     # Create embeddings
-    embeddings = create_embeddings_batch(processed_contents)
+    embeddings = await create_embeddings_batch(processed_contents)
     
     # Convert to DocumentChunk objects
     documents = []
@@ -206,7 +220,7 @@ async def search_documents_abstracted(
 ) -> List[Dict[str, Any]]:
     """Search documents using the abstraction layer"""
     
-    query_embedding = create_embedding(query)
+    query_embedding = await create_embedding(query)
     
     if use_hybrid:
         results = await vector_db.hybrid_search_documents(
@@ -383,7 +397,7 @@ async def add_code_examples_to_database(
         combined_texts.append(combined_text)
     
     # Create embeddings for the batch
-    embeddings = create_embeddings_batch(combined_texts)
+    embeddings = await create_embeddings_batch(combined_texts)
     
     # Convert to CodeExample objects
     examples = []
@@ -416,7 +430,7 @@ async def search_code_examples_abstracted(
     
     # Create a more descriptive query for better embedding match
     enhanced_query = f"Code example for {query}\n\nSummary: Example code showing {query}"
-    query_embedding = create_embedding(enhanced_query)
+    query_embedding = await create_embedding(enhanced_query)
     
     if use_hybrid:
         results = await vector_db.hybrid_search_code_examples(

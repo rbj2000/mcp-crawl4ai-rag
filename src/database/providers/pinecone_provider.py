@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from typing import List, Dict, Any, Optional
 from ..base import (
     VectorDatabaseProvider, 
@@ -7,6 +8,8 @@ from ..base import (
     VectorSearchResult, 
     SourceInfo
 )
+
+logger = logging.getLogger(__name__)
 
 class PineconeProvider(VectorDatabaseProvider):
     """Pinecone vector database implementation"""
@@ -17,10 +20,60 @@ class PineconeProvider(VectorDatabaseProvider):
         self.code_index = None
         self.documents_index_name = config["index_name"]
         self.code_examples_index_name = f"{config['index_name']}-code"
+        self.embedding_dimension = config.get("embedding_dimension", 1536)
         
         # Store sources in memory since Pinecone doesn't support traditional tables
         self.sources_cache = {}
+        logger.info(f"Pinecone provider initialized with embedding dimension: {self.embedding_dimension}")
     
+    def get_embedding_dimension(self) -> int:
+        """Get the configured embedding dimension for this provider"""
+        return self.embedding_dimension
+    
+    async def validate_embedding_dimension(self, dimension: int) -> bool:
+        """Validate if the given embedding dimension is compatible"""
+        try:
+            import pinecone
+            
+            # Check if indexes exist and have compatible dimensions
+            existing_indexes = pinecone.list_indexes()
+            
+            for index_name in [self.documents_index_name, self.code_examples_index_name]:
+                if index_name in existing_indexes:
+                    # Get index description to check dimension
+                    index_description = pinecone.describe_index(index_name)
+                    existing_dimension = index_description.dimension
+                    
+                    if existing_dimension != dimension:
+                        logger.error(
+                            f"Index {index_name} dimension mismatch: existing {existing_dimension}, "
+                            f"requested {dimension}"
+                        )
+                        return False
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error validating embedding dimension: {e}")
+            return False
+    
+    async def migrate_dimension(self, new_dimension: int) -> bool:
+        """Migrate to a new embedding dimension"""
+        logger.warning(
+            f"Pinecone provider cannot automatically migrate from dimension "
+            f"{self.embedding_dimension} to {new_dimension}. "
+            f"You need to recreate indexes with the new dimension."
+        )
+        
+        # Provide migration guidance
+        logger.info(
+            f"Migration steps:\n"
+            f"1. Delete existing indexes: {self.documents_index_name}, {self.code_examples_index_name}\n"
+            f"2. Recreate indexes with dimension {new_dimension}\n"
+            f"3. Regenerate and re-insert all embeddings with the new dimension"
+        )
+        
+        return False
+
     async def initialize(self) -> None:
         """Initialize Pinecone connection"""
         try:
@@ -33,6 +86,14 @@ class PineconeProvider(VectorDatabaseProvider):
             
             # Create indexes if they don't exist
             await self._ensure_indexes_exist()
+            
+            # Validate existing data compatibility
+            if not await self.validate_embedding_dimension(self.embedding_dimension):
+                raise ValueError(
+                    f"Existing indexes have incompatible embedding dimension. "
+                    f"Expected {self.embedding_dimension}. "
+                    f"Use migrate_dimension method for migration guidance."
+                )
             
             self.index = pinecone.Index(self.documents_index_name)
             self.code_index = pinecone.Index(self.code_examples_index_name)
@@ -57,6 +118,14 @@ class PineconeProvider(VectorDatabaseProvider):
         """Add documents to Pinecone"""
         if not documents:
             return
+        
+        # Validate embedding dimensions
+        for doc in documents:
+            if len(doc.embedding) != self.embedding_dimension:
+                raise ValueError(
+                    f"Document embedding dimension mismatch: expected {self.embedding_dimension}, "
+                    f"got {len(doc.embedding)} for URL {doc.url}"
+                )
         
         # Delete existing documents by URL first
         unique_urls = list(set(doc.url for doc in documents))
@@ -92,6 +161,13 @@ class PineconeProvider(VectorDatabaseProvider):
         filter_metadata: Optional[Dict[str, Any]] = None
     ) -> List[VectorSearchResult]:
         """Search documents in Pinecone"""
+        # Validate embedding dimension
+        if len(query_embedding) != self.embedding_dimension:
+            raise ValueError(
+                f"Query embedding dimension mismatch: expected {self.embedding_dimension}, "
+                f"got {len(query_embedding)}"
+            )
+            
         try:
             filter_dict = {}
             if filter_metadata and "source" in filter_metadata:
@@ -126,6 +202,14 @@ class PineconeProvider(VectorDatabaseProvider):
         """Add code examples to Pinecone"""
         if not examples:
             return
+        
+        # Validate embedding dimensions
+        for ex in examples:
+            if len(ex.embedding) != self.embedding_dimension:
+                raise ValueError(
+                    f"Code example embedding dimension mismatch: expected {self.embedding_dimension}, "
+                    f"got {len(ex.embedding)} for URL {ex.url}"
+                )
         
         # Delete existing code examples by URL first
         unique_urls = list(set(ex.url for ex in examples))
@@ -163,6 +247,13 @@ class PineconeProvider(VectorDatabaseProvider):
         filter_metadata: Optional[Dict[str, Any]] = None
     ) -> List[VectorSearchResult]:
         """Search code examples in Pinecone"""
+        # Validate embedding dimension
+        if len(query_embedding) != self.embedding_dimension:
+            raise ValueError(
+                f"Query embedding dimension mismatch: expected {self.embedding_dimension}, "
+                f"got {len(query_embedding)}"
+            )
+            
         try:
             filter_dict = {}
             if filter_metadata and "source" in filter_metadata:
@@ -243,6 +334,13 @@ class PineconeProvider(VectorDatabaseProvider):
         Note: Pinecone doesn't support traditional keyword search,
         so this falls back to vector search only.
         """
+        # Validate embedding dimension
+        if len(query_embedding) != self.embedding_dimension:
+            raise ValueError(
+                f"Query embedding dimension mismatch: expected {self.embedding_dimension}, "
+                f"got {len(query_embedding)}"
+            )
+            
         return await self.search_documents(
             query_embedding=query_embedding,
             match_count=match_count,
@@ -261,6 +359,13 @@ class PineconeProvider(VectorDatabaseProvider):
         Note: Pinecone doesn't support traditional keyword search,
         so this falls back to vector search only.
         """
+        # Validate embedding dimension
+        if len(query_embedding) != self.embedding_dimension:
+            raise ValueError(
+                f"Query embedding dimension mismatch: expected {self.embedding_dimension}, "
+                f"got {len(query_embedding)}"
+            )
+            
         return await self.search_code_examples(
             query_embedding=query_embedding,
             match_count=match_count,
@@ -276,7 +381,7 @@ class PineconeProvider(VectorDatabaseProvider):
         if self.documents_index_name not in existing_indexes:
             pinecone.create_index(
                 name=self.documents_index_name,
-                dimension=1536,  # OpenAI embedding dimension
+                dimension=self.embedding_dimension,
                 metric="cosine"
             )
             # Wait for index to be ready
@@ -285,7 +390,7 @@ class PineconeProvider(VectorDatabaseProvider):
         if self.code_examples_index_name not in existing_indexes:
             pinecone.create_index(
                 name=self.code_examples_index_name,
-                dimension=1536,
+                dimension=self.embedding_dimension,
                 metric="cosine"
             )
             # Wait for index to be ready
