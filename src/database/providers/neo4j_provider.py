@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from typing import List, Dict, Any, Optional
 from ..base import (
     VectorDatabaseProvider, 
@@ -9,6 +10,8 @@ from ..base import (
     SourceInfo
 )
 
+logger = logging.getLogger(__name__)
+
 class Neo4jVectorProvider(VectorDatabaseProvider):
     """Neo4j vector database implementation using vector indexes"""
     
@@ -16,7 +19,67 @@ class Neo4jVectorProvider(VectorDatabaseProvider):
         self.config = config
         self.driver = None
         self.database = config.get("database", "neo4j")
+        self.embedding_dimension = config.get("embedding_dimension", 1536)
+        logger.info(f"Neo4j provider initialized with embedding dimension: {self.embedding_dimension}")
     
+    def get_embedding_dimension(self) -> int:
+        """Get the configured embedding dimension for this provider"""
+        return self.embedding_dimension
+    
+    async def validate_embedding_dimension(self, dimension: int) -> bool:
+        """Validate if the given embedding dimension is compatible"""
+        try:
+            async with self.driver.session(database=self.database) as session:
+                # Check if we have any existing vector indexes
+                result = await session.run("""
+                    SHOW INDEXES 
+                    WHERE type = 'VECTOR' AND name IN ['document_embeddings', 'code_embeddings']
+                """)
+                
+                indexes = []
+                async for record in result:
+                    indexes.append(record)
+                
+                if not indexes:
+                    return True  # No existing vector indexes
+                
+                # Check if existing indexes have compatible dimensions
+                for index in indexes:
+                    # This is a simplified check - in practice, you'd need to query
+                    # the index configuration to get the actual dimension
+                    if hasattr(index, 'options') and 'vector.dimensions' in index.options:
+                        existing_dim = int(index.options['vector.dimensions'])
+                        if existing_dim != dimension:
+                            logger.error(
+                                f"Vector index dimension mismatch: existing {existing_dim}, "
+                                f"requested {dimension}"
+                            )
+                            return False
+                
+                return True
+        except Exception as e:
+            logger.error(f"Error validating embedding dimension: {e}")
+            return False
+    
+    async def migrate_dimension(self, new_dimension: int) -> bool:
+        """Migrate to a new embedding dimension"""
+        logger.warning(
+            f"Neo4j provider cannot automatically migrate from dimension "
+            f"{self.embedding_dimension} to {new_dimension}. "
+            f"You need to recreate vector indexes and regenerate embeddings."
+        )
+        
+        # Provide migration guidance
+        logger.info(
+            f"Migration steps:\n"
+            f"1. Drop existing vector indexes: DROP INDEX document_embeddings; DROP INDEX code_embeddings;\n"
+            f"2. Recreate vector indexes with new dimension ({new_dimension})\n"
+            f"3. Delete existing nodes: MATCH (d:Document), (c:CodeExample) DELETE d, c;\n"
+            f"4. Regenerate and re-insert all embeddings with the new dimension"
+        )
+        
+        return False
+
     async def initialize(self) -> None:
         """Initialize Neo4j connection and create vector indexes"""
         try:
@@ -72,25 +135,25 @@ class Neo4jVectorProvider(VectorDatabaseProvider):
             
             # Create vector indexes for similarity search
             vector_indexes = [
-                """
+                f"""
                 CREATE VECTOR INDEX document_embeddings IF NOT EXISTS
                 FOR (d:Document) ON (d.embedding)
-                OPTIONS {
-                    indexConfig: {
-                        `vector.dimensions`: 1536,
+                OPTIONS {{
+                    indexConfig: {{
+                        `vector.dimensions`: {self.embedding_dimension},
                         `vector.similarity_function`: 'cosine'
-                    }
-                }
+                    }}
+                }}
                 """,
-                """
+                f"""
                 CREATE VECTOR INDEX code_embeddings IF NOT EXISTS
                 FOR (c:CodeExample) ON (c.embedding)
-                OPTIONS {
-                    indexConfig: {
-                        `vector.dimensions`: 1536,
+                OPTIONS {{
+                    indexConfig: {{
+                        `vector.dimensions`: {self.embedding_dimension},
                         `vector.similarity_function`: 'cosine'
-                    }
-                }
+                    }}
+                }}
                 """
             ]
             
@@ -118,6 +181,14 @@ class Neo4jVectorProvider(VectorDatabaseProvider):
         """Add documents to Neo4j"""
         if not documents:
             return
+        
+        # Validate embedding dimensions
+        for doc in documents:
+            if len(doc.embedding) != self.embedding_dimension:
+                raise ValueError(
+                    f"Document embedding dimension mismatch: expected {self.embedding_dimension}, "
+                    f"got {len(doc.embedding)} for URL {doc.url}"
+                )
         
         async with self.driver.session(database=self.database) as session:
             # Delete existing documents by URL
@@ -166,6 +237,13 @@ class Neo4jVectorProvider(VectorDatabaseProvider):
         filter_metadata: Optional[Dict[str, Any]] = None
     ) -> List[VectorSearchResult]:
         """Search documents using vector similarity"""
+        # Validate embedding dimension
+        if len(query_embedding) != self.embedding_dimension:
+            raise ValueError(
+                f"Query embedding dimension mismatch: expected {self.embedding_dimension}, "
+                f"got {len(query_embedding)}"
+            )
+        
         async with self.driver.session(database=self.database) as session:
             
             # Build query with optional filtering
@@ -211,6 +289,14 @@ class Neo4jVectorProvider(VectorDatabaseProvider):
         """Add code examples to Neo4j"""
         if not examples:
             return
+        
+        # Validate embedding dimensions
+        for ex in examples:
+            if len(ex.embedding) != self.embedding_dimension:
+                raise ValueError(
+                    f"Code example embedding dimension mismatch: expected {self.embedding_dimension}, "
+                    f"got {len(ex.embedding)} for URL {ex.url}"
+                )
         
         async with self.driver.session(database=self.database) as session:
             # Delete existing code examples by URL
@@ -261,6 +347,13 @@ class Neo4jVectorProvider(VectorDatabaseProvider):
         filter_metadata: Optional[Dict[str, Any]] = None
     ) -> List[VectorSearchResult]:
         """Search code examples using vector similarity"""
+        # Validate embedding dimension
+        if len(query_embedding) != self.embedding_dimension:
+            raise ValueError(
+                f"Query embedding dimension mismatch: expected {self.embedding_dimension}, "
+                f"got {len(query_embedding)}"
+            )
+        
         async with self.driver.session(database=self.database) as session:
             
             # Build query with optional filtering
@@ -361,6 +454,13 @@ class Neo4jVectorProvider(VectorDatabaseProvider):
         filter_metadata: Optional[Dict[str, Any]] = None
     ) -> List[VectorSearchResult]:
         """Perform hybrid search combining vector and keyword search"""
+        # Validate embedding dimension
+        if len(query_embedding) != self.embedding_dimension:
+            raise ValueError(
+                f"Query embedding dimension mismatch: expected {self.embedding_dimension}, "
+                f"got {len(query_embedding)}"
+            )
+        
         async with self.driver.session(database=self.database) as session:
             
             # Get vector search results
@@ -416,6 +516,13 @@ class Neo4jVectorProvider(VectorDatabaseProvider):
         filter_metadata: Optional[Dict[str, Any]] = None
     ) -> List[VectorSearchResult]:
         """Perform hybrid search for code examples"""
+        # Validate embedding dimension
+        if len(query_embedding) != self.embedding_dimension:
+            raise ValueError(
+                f"Query embedding dimension mismatch: expected {self.embedding_dimension}, "
+                f"got {len(query_embedding)}"
+            )
+        
         async with self.driver.session(database=self.database) as session:
             
             # Get vector search results

@@ -24,7 +24,8 @@ import re
 import concurrent.futures
 import sys
 
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode, MemoryAdaptiveDispatcher
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
+from crawl4ai.extraction_strategy import NoExtractionStrategy
 
 # Add knowledge_graphs folder to path for importing knowledge graph modules
 knowledge_graphs_path = Path(__file__).resolve().parent.parent / 'knowledge_graphs'
@@ -297,13 +298,9 @@ async def crawl_single_page(context: Context, url: str) -> str:
         # Create crawler configuration
         crawler_config = CrawlerRunConfig(
             word_count_threshold=50,
-            extraction_strategy="markdown",
-            chunking_strategy="linear",
+            extraction_strategy=NoExtractionStrategy(),
             css_selector="body",
-            cache_mode=CacheMode.BYPASS,
-            mean_chunker=True,
-            use_memory_adaptive_dispatcher=True,
-            memory_dispatcher=MemoryAdaptiveDispatcher()
+            cache_mode=CacheMode.BYPASS
         )
         
         # Crawl the page
@@ -316,7 +313,7 @@ async def crawl_single_page(context: Context, url: str) -> str:
             })
         
         # Extract content
-        content = result.markdown_content or result.cleaned_html
+        content = result.markdown or result.cleaned_html
         if not content:
             return json.dumps({
                 "success": False,
@@ -568,11 +565,14 @@ if os.getenv("USE_AGENTIC_RAG", "false") == "true":
 # The rest of the tools remain the same, but will use ctx.vector_db instead of ctx.supabase_client
 # This includes smart_crawl_url, parse_github_repository, check_ai_script_hallucinations, and query_knowledge_graph
 
-if __name__ == "__main__":
-    import uvicorn
-    
-    transport = os.getenv("TRANSPORT", "stdio").lower()
-    if transport == "sse":
-        uvicorn.run(mcp.app, host=mcp.host, port=mcp.port)
+async def main():
+    transport = os.getenv("TRANSPORT", "sse")
+    if transport == 'sse':
+        # Run the MCP server with sse transport
+        await mcp.run_sse_async()
     else:
-        mcp.run()
+        # Run the MCP server with stdio transport
+        await mcp.run_stdio_async()
+
+if __name__ == "__main__":
+    asyncio.run(main())

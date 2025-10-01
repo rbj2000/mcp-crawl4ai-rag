@@ -1,0 +1,236 @@
+# Prometheus configuration for MCP Crawl4AI RAG monitoring
+# =========================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'mcp-crawl4ai-rag'
+    environment: '${ENVIRONMENT:-development}'
+
+rule_files:
+  - "alerts/*.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    scrape_interval: 30s
+    metrics_path: /metrics
+
+  # MCP Crawl4AI application metrics
+  - job_name: 'mcp-crawl4ai'
+    static_configs:
+      - targets: ['mcp-crawl4ai-ollama-sqlite:8051', 'mcp-crawl4ai-ollama-neo4j:8051', 'mcp-crawl4ai-hybrid:8051']
+    scrape_interval: 15s
+    metrics_path: /metrics
+    scrape_timeout: 10s
+    honor_labels: true
+    params:
+      format: ['prometheus']
+
+  # Ollama service metrics
+  - job_name: 'ollama'
+    static_configs:
+      - targets: ['ollama:11434']
+    scrape_interval: 30s
+    metrics_path: /metrics
+    scrape_timeout: 10s
+
+  # Neo4j database metrics
+  - job_name: 'neo4j'
+    static_configs:
+      - targets: ['neo4j:7474']
+    scrape_interval: 30s
+    metrics_path: /db/neo4j/tx/commit
+    scrape_timeout: 10s
+
+  # Docker container metrics (via cAdvisor)
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+    scrape_interval: 30s
+    metrics_path: /metrics
+
+  # Node exporter for system metrics
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    scrape_interval: 30s
+
+  # Custom health check endpoints
+  - job_name: 'health-checks'
+    metrics_path: /health
+    scrape_interval: 60s
+    scrape_timeout: 30s
+    static_configs:
+      - targets: 
+        - 'mcp-crawl4ai-ollama-sqlite:8051'
+        - 'mcp-crawl4ai-ollama-neo4j:8051'
+        - 'mcp-crawl4ai-hybrid:8051'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: health-check-exporter:9115
+
+  # AI provider specific metrics
+  - job_name: 'ollama-models'
+    static_configs:
+      - targets: ['ollama:11434']
+    scrape_interval: 60s
+    metrics_path: /api/tags
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'ollama_.*'
+        target_label: provider
+        replacement: 'ollama'
+
+  # Application performance monitoring
+  - job_name: 'mcp-performance'
+    static_configs:
+      - targets: ['mcp-crawl4ai-ollama-sqlite:8051', 'mcp-crawl4ai-ollama-neo4j:8051']
+    scrape_interval: 15s
+    metrics_path: /metrics/performance
+    honor_timestamps: true
+
+# Recording rules for common queries
+recording_rules:
+  - name: mcp_crawl4ai_rules
+    rules:
+      # Request rate (requests per second)
+      - record: mcp:request_rate
+        expr: rate(http_requests_total[5m])
+      
+      # Error rate (percentage)
+      - record: mcp:error_rate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) * 100
+      
+      # Response time percentiles
+      - record: mcp:response_time_p50
+        expr: histogram_quantile(0.50, rate(http_request_duration_seconds_bucket[5m]))
+      
+      - record: mcp:response_time_p95
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
+      
+      - record: mcp:response_time_p99
+        expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))
+      
+      # AI provider metrics
+      - record: ollama:embedding_generation_rate
+        expr: rate(ollama_embedding_requests_total[5m])
+      
+      - record: ollama:llm_generation_rate
+        expr: rate(ollama_llm_requests_total[5m])
+      
+      - record: ollama:model_memory_usage
+        expr: ollama_model_memory_bytes / (1024 * 1024 * 1024)  # Convert to GB
+
+# Alerting rules
+alerting_rules:
+  - name: mcp_crawl4ai_alerts
+    rules:
+      # High error rate
+      - alert: HighErrorRate
+        expr: mcp:error_rate > 5
+        for: 2m
+        labels:
+          severity: warning
+          component: application
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value }}% for the last 2 minutes"
+      
+      # Service down
+      - alert: ServiceDown
+        expr: up{job="mcp-crawl4ai"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: application
+        annotations:
+          summary: "MCP Crawl4AI service is down"
+          description: "Service {{ $labels.instance }} has been down for more than 1 minute"
+      
+      # High response time
+      - alert: HighResponseTime
+        expr: mcp:response_time_p95 > 5
+        for: 3m
+        labels:
+          severity: warning
+          component: performance
+        annotations:
+          summary: "High response time detected"
+          description: "95th percentile response time is {{ $value }}s"
+      
+      # Ollama service down
+      - alert: OllamaServiceDown
+        expr: up{job="ollama"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: ai_provider
+        annotations:
+          summary: "Ollama service is down"
+          description: "Ollama service has been down for more than 2 minutes"
+      
+      # High memory usage
+      - alert: HighMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is above 85% for 5 minutes"
+      
+      # High CPU usage
+      - alert: HighCPUUsage
+        expr: 100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage is above 80% for 5 minutes"
+      
+      # Disk space low
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) * 100 < 10
+        for: 2m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "Low disk space"
+          description: "Disk space is below 10% on {{ $labels.device }}"
+      
+      # Model loading failures
+      - alert: OllamaModelLoadingFailures
+        expr: rate(ollama_model_load_failures_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: ai_provider
+        annotations:
+          summary: "Ollama model loading failures"
+          description: "Ollama is experiencing model loading failures"
+
+# Remote write configuration for long-term storage (optional)
+remote_write:
+  - url: "http://remote-storage:9090/api/v1/write"
+    queue_config:
+      max_samples_per_send: 1000
+      max_shards: 200
+      capacity: 2500

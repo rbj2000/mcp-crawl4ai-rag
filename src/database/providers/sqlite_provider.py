@@ -2,6 +2,7 @@ import sqlite3
 import json
 import asyncio
 import numpy as np
+import logging
 from typing import List, Dict, Any, Optional
 from sklearn.metrics.pairwise import cosine_similarity
 from ..base import (
@@ -12,6 +13,8 @@ from ..base import (
     SourceInfo
 )
 
+logger = logging.getLogger(__name__)
+
 class SQLiteProvider(VectorDatabaseProvider):
     """Local SQLite with vector similarity implementation"""
     
@@ -20,13 +23,69 @@ class SQLiteProvider(VectorDatabaseProvider):
         self.db_path = config["db_path"]
         self.embedding_dimension = config.get("embedding_dimension", 1536)
         self.connection = None
+        logger.info(f"SQLite provider initialized with embedding dimension: {self.embedding_dimension}")
     
+    def get_embedding_dimension(self) -> int:
+        """Get the configured embedding dimension for this provider"""
+        return self.embedding_dimension
+    
+    async def validate_embedding_dimension(self, dimension: int) -> bool:
+        """Validate if the given embedding dimension is compatible"""
+        if not self.connection:
+            return True  # No existing data to validate against
+        
+        try:
+            cursor = self.connection.cursor()
+            
+            # Check if we have any existing data
+            cursor.execute("SELECT COUNT(*) as count FROM sqlite_master WHERE type='table' AND name='documents'")
+            table_exists = cursor.fetchone()["count"] > 0
+            
+            if not table_exists:
+                return True  # No existing data
+            
+            cursor.execute("SELECT COUNT(*) as count FROM documents LIMIT 1")
+            has_documents = cursor.fetchone()["count"] > 0
+            
+            if not has_documents:
+                return True  # No existing documents
+            
+            # Check actual stored embedding dimension
+            cursor.execute("SELECT embedding FROM documents LIMIT 1")
+            row = cursor.fetchone()
+            if row:
+                stored_embedding = np.frombuffer(row["embedding"], dtype=np.float32)
+                stored_dimension = len(stored_embedding)
+                return dimension == stored_dimension
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error validating embedding dimension: {e}")
+            return False
+    
+    async def migrate_dimension(self, new_dimension: int) -> bool:
+        """Migrate to a new embedding dimension"""
+        logger.warning(
+            f"SQLite provider cannot automatically migrate from dimension "
+            f"{self.embedding_dimension} to {new_dimension}. "
+            f"You need to regenerate embeddings and recreate the database."
+        )
+        return False
+
     async def initialize(self) -> None:
         """Initialize SQLite database"""
         self.connection = sqlite3.connect(self.db_path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         await self._create_tables()
         await self._create_indexes()
+        
+        # Validate existing data compatibility
+        if not await self.validate_embedding_dimension(self.embedding_dimension):
+            raise ValueError(
+                f"Existing data has incompatible embedding dimension. "
+                f"Expected {self.embedding_dimension}. "
+                f"Delete the database file to start fresh or use migrate_dimension."
+            )
     
     async def close(self) -> None:
         """Close database connection"""
@@ -113,6 +172,14 @@ class SQLiteProvider(VectorDatabaseProvider):
         if not documents:
             return
         
+        # Validate embedding dimensions
+        for doc in documents:
+            if len(doc.embedding) != self.embedding_dimension:
+                raise ValueError(
+                    f"Document embedding dimension mismatch: expected {self.embedding_dimension}, "
+                    f"got {len(doc.embedding)} for URL {doc.url}"
+                )
+        
         cursor = self.connection.cursor()
         
         # Delete existing documents by URL
@@ -143,6 +210,7 @@ class SQLiteProvider(VectorDatabaseProvider):
             """, batch)
         
         self.connection.commit()
+        logger.debug(f"Added {len(documents)} documents to SQLite")
     
     async def search_documents(
         self, 
@@ -151,6 +219,13 @@ class SQLiteProvider(VectorDatabaseProvider):
         filter_metadata: Optional[Dict[str, Any]] = None
     ) -> List[VectorSearchResult]:
         """Search documents using cosine similarity"""
+        # Validate embedding dimension
+        if len(query_embedding) != self.embedding_dimension:
+            raise ValueError(
+                f"Query embedding dimension mismatch: expected {self.embedding_dimension}, "
+                f"got {len(query_embedding)}"
+            )
+        
         cursor = self.connection.cursor()
         
         # Build query with optional filtering
@@ -195,6 +270,14 @@ class SQLiteProvider(VectorDatabaseProvider):
         if not examples:
             return
         
+        # Validate embedding dimensions
+        for ex in examples:
+            if len(ex.embedding) != self.embedding_dimension:
+                raise ValueError(
+                    f"Code example embedding dimension mismatch: expected {self.embedding_dimension}, "
+                    f"got {len(ex.embedding)} for URL {ex.url}"
+                )
+        
         cursor = self.connection.cursor()
         
         # Delete existing code examples by URL
@@ -226,6 +309,7 @@ class SQLiteProvider(VectorDatabaseProvider):
             """, batch)
         
         self.connection.commit()
+        logger.debug(f"Added {len(examples)} code examples to SQLite")
     
     async def search_code_examples(
         self,
@@ -234,6 +318,13 @@ class SQLiteProvider(VectorDatabaseProvider):
         filter_metadata: Optional[Dict[str, Any]] = None
     ) -> List[VectorSearchResult]:
         """Search code examples using cosine similarity"""
+        # Validate embedding dimension
+        if len(query_embedding) != self.embedding_dimension:
+            raise ValueError(
+                f"Query embedding dimension mismatch: expected {self.embedding_dimension}, "
+                f"got {len(query_embedding)}"
+            )
+        
         cursor = self.connection.cursor()
         
         # Build query with optional filtering
@@ -339,6 +430,13 @@ class SQLiteProvider(VectorDatabaseProvider):
         filter_metadata: Optional[Dict[str, Any]] = None
     ) -> List[VectorSearchResult]:
         """Hybrid search combining vector similarity and keyword search"""
+        # Validate embedding dimension
+        if len(query_embedding) != self.embedding_dimension:
+            raise ValueError(
+                f"Query embedding dimension mismatch: expected {self.embedding_dimension}, "
+                f"got {len(query_embedding)}"
+            )
+        
         # Get vector search results
         vector_results = await self.search_documents(
             query_embedding=query_embedding,
@@ -387,6 +485,13 @@ class SQLiteProvider(VectorDatabaseProvider):
         filter_metadata: Optional[Dict[str, Any]] = None
     ) -> List[VectorSearchResult]:
         """Hybrid search for code examples"""
+        # Validate embedding dimension
+        if len(query_embedding) != self.embedding_dimension:
+            raise ValueError(
+                f"Query embedding dimension mismatch: expected {self.embedding_dimension}, "
+                f"got {len(query_embedding)}"
+            )
+        
         # Get vector search results
         vector_results = await self.search_code_examples(
             query_embedding=query_embedding,

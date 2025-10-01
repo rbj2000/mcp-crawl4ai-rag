@@ -1,5 +1,6 @@
 import json
 import time
+import logging
 import concurrent.futures
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse
@@ -13,13 +14,63 @@ from ..base import (
     SourceInfo
 )
 
+logger = logging.getLogger(__name__)
+
 class SupabaseProvider(VectorDatabaseProvider):
     """Supabase/pgvector implementation"""
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.client: Optional[Client] = None
+        self.embedding_dimension = config.get("embedding_dimension", 1536)
+        logger.info(f"Supabase provider initialized with embedding dimension: {self.embedding_dimension}")
     
+    def get_embedding_dimension(self) -> int:
+        """Get the configured embedding dimension for this provider"""
+        return self.embedding_dimension
+    
+    async def validate_embedding_dimension(self, dimension: int) -> bool:
+        """Validate if the given embedding dimension is compatible"""
+        try:
+            # Check if we have any existing data
+            result = self.client.table("crawled_pages").select("embedding").limit(1).execute()
+            
+            if not result.data:
+                return True  # No existing data
+            
+            # Check the actual dimension of stored embeddings
+            first_embedding = result.data[0].get("embedding", [])
+            if first_embedding and len(first_embedding) != dimension:
+                logger.error(
+                    f"Embedding dimension mismatch: existing data has {len(first_embedding)} "
+                    f"dimensions, requested {dimension}"
+                )
+                return False
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error validating embedding dimension: {e}")
+            return False
+    
+    async def migrate_dimension(self, new_dimension: int) -> bool:
+        """Migrate to a new embedding dimension"""
+        logger.warning(
+            f"Supabase provider cannot automatically migrate from dimension "
+            f"{self.embedding_dimension} to {new_dimension}. "
+            f"You need to update the vector column definition and regenerate embeddings."
+        )
+        
+        # Provide migration guidance
+        logger.info(
+            f"Migration steps:\n"
+            f"1. Update vector column: ALTER TABLE crawled_pages ALTER COLUMN embedding TYPE vector({new_dimension});\n"
+            f"2. Update vector column: ALTER TABLE code_examples ALTER COLUMN embedding TYPE vector({new_dimension});\n"
+            f"3. Regenerate and re-insert all embeddings with the new dimension\n"
+            f"4. Update vector indexes if needed"
+        )
+        
+        return False
+
     async def initialize(self) -> None:
         """Initialize the Supabase client"""
         self.client = create_client(
@@ -29,6 +80,14 @@ class SupabaseProvider(VectorDatabaseProvider):
         
         # Test connection
         await self.health_check()
+        
+        # Validate existing data compatibility
+        if not await self.validate_embedding_dimension(self.embedding_dimension):
+            raise ValueError(
+                f"Existing data has incompatible embedding dimension. "
+                f"Expected {self.embedding_dimension}. "
+                f"Use migrate_dimension method for migration guidance."
+            )
     
     async def close(self) -> None:
         """Close the database connection"""
@@ -53,6 +112,14 @@ class SupabaseProvider(VectorDatabaseProvider):
         """Add document chunks to Supabase"""
         if not documents:
             return
+        
+        # Validate embedding dimensions
+        for doc in documents:
+            if len(doc.embedding) != self.embedding_dimension:
+                raise ValueError(
+                    f"Document embedding dimension mismatch: expected {self.embedding_dimension}, "
+                    f"got {len(doc.embedding)} for URL {doc.url}"
+                )
         
         # Get unique URLs to delete existing records
         unique_urls = list(set(doc.url for doc in documents))
@@ -101,6 +168,13 @@ class SupabaseProvider(VectorDatabaseProvider):
         filter_metadata: Optional[Dict[str, Any]] = None
     ) -> List[VectorSearchResult]:
         """Search for similar documents"""
+        # Validate embedding dimension
+        if len(query_embedding) != self.embedding_dimension:
+            raise ValueError(
+                f"Query embedding dimension mismatch: expected {self.embedding_dimension}, "
+                f"got {len(query_embedding)}"
+            )
+        
         try:
             params = {
                 'query_embedding': query_embedding,
@@ -136,6 +210,14 @@ class SupabaseProvider(VectorDatabaseProvider):
         """Add code examples to Supabase"""
         if not examples:
             return
+        
+        # Validate embedding dimensions
+        for ex in examples:
+            if len(ex.embedding) != self.embedding_dimension:
+                raise ValueError(
+                    f"Code example embedding dimension mismatch: expected {self.embedding_dimension}, "
+                    f"got {len(ex.embedding)} for URL {ex.url}"
+                )
         
         # Delete existing records for these URLs
         unique_urls = list(set(ex.url for ex in examples))
@@ -176,6 +258,13 @@ class SupabaseProvider(VectorDatabaseProvider):
         filter_metadata: Optional[Dict[str, Any]] = None
     ) -> List[VectorSearchResult]:
         """Search for similar code examples"""
+        # Validate embedding dimension
+        if len(query_embedding) != self.embedding_dimension:
+            raise ValueError(
+                f"Query embedding dimension mismatch: expected {self.embedding_dimension}, "
+                f"got {len(query_embedding)}"
+            )
+        
         try:
             params = {
                 'query_embedding': query_embedding,
@@ -265,6 +354,13 @@ class SupabaseProvider(VectorDatabaseProvider):
         filter_metadata: Optional[Dict[str, Any]] = None
     ) -> List[VectorSearchResult]:
         """Perform hybrid search combining vector and keyword search"""
+        # Validate embedding dimension
+        if len(query_embedding) != self.embedding_dimension:
+            raise ValueError(
+                f"Query embedding dimension mismatch: expected {self.embedding_dimension}, "
+                f"got {len(query_embedding)}"
+            )
+        
         # Get vector search results
         vector_results = await self.search_documents(
             query_embedding=query_embedding,
@@ -295,6 +391,13 @@ class SupabaseProvider(VectorDatabaseProvider):
         filter_metadata: Optional[Dict[str, Any]] = None
     ) -> List[VectorSearchResult]:
         """Perform hybrid search for code examples"""
+        # Validate embedding dimension
+        if len(query_embedding) != self.embedding_dimension:
+            raise ValueError(
+                f"Query embedding dimension mismatch: expected {self.embedding_dimension}, "
+                f"got {len(query_embedding)}"
+            )
+        
         # Get vector search results
         vector_results = await self.search_code_examples(
             query_embedding=query_embedding,

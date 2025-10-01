@@ -1,0 +1,329 @@
+# Multi-stage production Dockerfile for MCP Crawl4AI RAG
+# =====================================================
+# Optimized for security, performance, and minimal size
+# Supports multiple AI providers (OpenAI, Ollama) and databases
+
+# Build arguments
+ARG PYTHON_VERSION=3.12
+ARG VECTOR_DB_PROVIDER=supabase
+ARG AI_PROVIDER=openai
+
+# =====================================================
+# Stage 1: Base Python Image with System Dependencies
+# =====================================================
+FROM python:${PYTHON_VERSION}-slim as base
+
+# Metadata
+LABEL maintainer="MCP Crawl4AI Team"
+LABEL description="MCP Crawl4AI RAG with multi-provider AI support"
+LABEL version="2.0.0"
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    UV_SYSTEM_PYTHON=1
+
+# Create non-root user for security
+RUN groupadd --gid 1000 mcpuser && \
+    useradd --uid 1000 --gid mcpuser --shell /bin/bash --create-home mcpuser
+
+# Install system dependencies and security updates
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        git \
+        ca-certificates \
+        gcc \
+        g++ \
+        pkg-config \
+        libffi-dev \
+        libssl-dev \
+        libbz2-dev \
+        liblzma-dev \
+        libsqlite3-dev \
+        libxml2-dev \
+        libxslt1-dev \
+        zlib1g-dev \
+        netcat-openbsd \
+        procps && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get clean
+
+# Install uv for faster Python package management
+RUN pip install --no-cache-dir uv
+
+# =====================================================
+# Stage 2: Dependencies Installation
+# =====================================================
+FROM base as dependencies
+
+WORKDIR /tmp
+
+# Copy dependency files
+COPY pyproject.toml uv.lock README.md ./
+
+# Install Python dependencies based on provider
+ARG VECTOR_DB_PROVIDER
+ARG AI_PROVIDER
+
+RUN case "${VECTOR_DB_PROVIDER}" in \
+        "all") uv pip install --system -e ".[all]" ;; \
+        "supabase") uv pip install --system -e ".[supabase]" ;; \
+        "pinecone") uv pip install --system -e ".[pinecone]" ;; \
+        "weaviate") uv pip install --system -e ".[weaviate]" ;; \
+        "neo4j_vector") uv pip install --system -e ".[neo4j]" ;; \
+        "sqlite") uv pip install --system -e ".[sqlite]" ;; \
+        *) uv pip install --system -e . ;; \
+    esac
+
+# Install AI provider specific dependencies
+RUN if [ "${AI_PROVIDER}" = "ollama" ] || [ "${AI_PROVIDER}" = "mixed" ]; then \
+        uv pip install --system ollama requests; \
+    fi
+
+# Install monitoring and health check dependencies
+RUN uv pip install --system prometheus-client psutil
+
+# Setup crawl4ai
+RUN crawl4ai-setup
+
+# Clean up build dependencies to reduce image size
+RUN apt-get remove -y gcc g++ pkg-config && \
+    apt-get autoremove -y && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# =====================================================
+# Stage 3: Production Image
+# =====================================================
+FROM python:${PYTHON_VERSION}-slim as production
+
+# Reinstall minimal runtime dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates \
+        netcat-openbsd \
+        procps && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get clean
+
+# Create non-root user
+RUN groupadd --gid 1000 mcpuser && \
+    useradd --uid 1000 --gid mcpuser --shell /bin/bash --create-home mcpuser
+
+# Copy Python environment from dependencies stage
+COPY --from=dependencies /usr/local/lib/python*/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=dependencies /usr/local/bin /usr/local/bin
+
+# Set working directory
+WORKDIR /app
+
+# Create necessary directories
+RUN mkdir -p \
+        /app/logs \
+        /app/data \
+        /app/tmp \
+        /app/cache && \
+    chown -R mcpuser:mcpuser /app
+
+# Copy application code
+COPY --chown=mcpuser:mcpuser src/ ./src/
+COPY --chown=mcpuser:mcpuser knowledge_graphs/ ./knowledge_graphs/
+
+# Copy deployment scripts and configuration
+COPY --chown=mcpuser:mcpuser deployment/scripts/health_check.py ./scripts/
+COPY --chown=mcpuser:mcpuser deployment/environments/.env.* ./environments/
+
+# Create health check script
+RUN echo '#!/bin/bash\n\
+set -e\n\
+\n\
+# Health check function\n\
+health_check() {\n\
+    local endpoint="${1:-http://localhost:8051/health}"\n\
+    local timeout="${2:-10}"\n\
+    \n\
+    if command -v curl >/dev/null 2>&1; then\n\
+        curl -f -s --max-time "${timeout}" "${endpoint}" >/dev/null\n\
+    elif command -v wget >/dev/null 2>&1; then\n\
+        wget -q -T "${timeout}" -O /dev/null "${endpoint}"\n\
+    else\n\
+        echo "Neither curl nor wget available for health check"\n\
+        exit 1\n\
+    fi\n\
+}\n\
+\n\
+# Run health check\n\
+health_check "$@"' > /app/healthcheck.sh && \
+    chmod +x /app/healthcheck.sh && \
+    chown mcpuser:mcpuser /app/healthcheck.sh
+
+# Create startup script with provider validation
+RUN echo '#!/bin/bash\n\
+set -e\n\
+\n\
+echo "Starting MCP Crawl4AI RAG Server..."\n\
+echo "AI Provider: ${AI_PROVIDER:-openai}"\n\
+echo "Vector DB Provider: ${VECTOR_DB_PROVIDER:-supabase}"\n\
+echo "Environment: ${ENVIRONMENT:-development}"\n\
+\n\
+# Validate environment variables\n\
+validate_env() {\n\
+    local required_vars=("HOST" "PORT" "AI_PROVIDER" "VECTOR_DB_PROVIDER")\n\
+    \n\
+    for var in "${required_vars[@]}"; do\n\
+        if [ -z "${!var}" ]; then\n\
+            echo "Error: Required environment variable $var is not set"\n\
+            exit 1\n\
+        fi\n\
+    done\n\
+}\n\
+\n\
+# Provider-specific validations\n\
+validate_providers() {\n\
+    case "${AI_PROVIDER}" in\n\
+        "openai"|"mixed")\n\
+            if [ -z "${OPENAI_API_KEY}" ]; then\n\
+                echo "Error: OPENAI_API_KEY required for OpenAI provider"\n\
+                exit 1\n\
+            fi\n\
+            ;;\n\
+        "ollama")\n\
+            if [ -z "${OLLAMA_BASE_URL}" ]; then\n\
+                echo "Error: OLLAMA_BASE_URL required for Ollama provider"\n\
+                exit 1\n\
+            fi\n\
+            ;;\n\
+    esac\n\
+    \n\
+    case "${VECTOR_DB_PROVIDER}" in\n\
+        "supabase")\n\
+            if [ -z "${SUPABASE_URL}" ] || [ -z "${SUPABASE_SERVICE_KEY}" ]; then\n\
+                echo "Error: SUPABASE_URL and SUPABASE_SERVICE_KEY required"\n\
+                exit 1\n\
+            fi\n\
+            ;;\n\
+        "neo4j_vector")\n\
+            if [ -z "${NEO4J_URI}" ] || [ -z "${NEO4J_USER}" ] || [ -z "${NEO4J_PASSWORD}" ]; then\n\
+                echo "Error: Neo4j connection parameters required"\n\
+                exit 1\n\
+            fi\n\
+            ;;\n\
+    esac\n\
+}\n\
+\n\
+# Wait for dependencies\n\
+wait_for_dependencies() {\n\
+    if [ "${AI_PROVIDER}" = "ollama" ] || [ "${AI_PROVIDER}" = "mixed" ]; then\n\
+        echo "Waiting for Ollama service..."\n\
+        local ollama_host=$(echo "${OLLAMA_BASE_URL}" | sed "s|http://||" | cut -d: -f1)\n\
+        local ollama_port=$(echo "${OLLAMA_BASE_URL}" | sed "s|http://||" | cut -d: -f2)\n\
+        ollama_port=${ollama_port:-11434}\n\
+        \n\
+        for i in {1..30}; do\n\
+            if nc -z "${ollama_host}" "${ollama_port}"; then\n\
+                echo "Ollama service is ready"\n\
+                break\n\
+            fi\n\
+            echo "Waiting for Ollama... ($i/30)"\n\
+            sleep 2\n\
+        done\n\
+    fi\n\
+    \n\
+    if [ "${VECTOR_DB_PROVIDER}" = "neo4j_vector" ]; then\n\
+        echo "Waiting for Neo4j service..."\n\
+        local neo4j_host=$(echo "${NEO4J_URI}" | sed "s|bolt://||" | cut -d: -f1)\n\
+        local neo4j_port=$(echo "${NEO4J_URI}" | sed "s|bolt://||" | cut -d: -f2)\n\
+        neo4j_port=${neo4j_port:-7687}\n\
+        \n\
+        for i in {1..30}; do\n\
+            if nc -z "${neo4j_host}" "${neo4j_port}"; then\n\
+                echo "Neo4j service is ready"\n\
+                break\n\
+            fi\n\
+            echo "Waiting for Neo4j... ($i/30)"\n\
+            sleep 2\n\
+        done\n\
+    fi\n\
+}\n\
+\n\
+# Run validations\n\
+validate_env\n\
+validate_providers\n\
+wait_for_dependencies\n\
+\n\
+# Start the application\n\
+echo "Starting MCP server..."\n\
+exec python src/crawl4ai_mcp_refactored.py "$@"\n' > /app/start.sh && \
+    chmod +x /app/start.sh && \
+    chown mcpuser:mcpuser /app/start.sh
+
+# Switch to non-root user
+USER mcpuser
+
+# Set default environment variables
+ENV HOST=0.0.0.0 \
+    PORT=8051 \
+    TRANSPORT=sse \
+    VECTOR_DB_PROVIDER=supabase \
+    AI_PROVIDER=openai \
+    PYTHONPATH=/app
+
+# Health check configuration
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD /app/healthcheck.sh
+
+# Expose port
+EXPOSE 8051
+
+# Volume for persistent data
+VOLUME ["/app/data", "/app/logs"]
+
+# Default command
+CMD ["/app/start.sh"]
+
+# =====================================================
+# Stage 4: Development Image (optional)
+# =====================================================
+FROM production as development
+
+# Switch back to root for development tools installation
+USER root
+
+# Install development dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        vim \
+        less \
+        htop \
+        strace \
+        tcpdump && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install development Python packages
+RUN uv pip install --system \
+        pytest \
+        pytest-asyncio \
+        pytest-mock \
+        black \
+        isort \
+        flake8 \
+        mypy \
+        ipython \
+        ipdb
+
+# Enable hot reload and debugging
+ENV PYTHONPATH=/app \
+    FLASK_ENV=development \
+    PYTHONDONTWRITEBYTECODE=0 \
+    HOT_RELOAD=true
+
+# Switch back to non-root user
+USER mcpuser
+
+# Override CMD for development
+CMD ["python", "-m", "debugpy", "--listen", "0.0.0.0:5678", "--wait-for-client", "src/crawl4ai_mcp_refactored.py"]

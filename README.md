@@ -1,16 +1,23 @@
 # MCP Crawl4AI RAG - Database Agnostic
 
-A powerful, database-agnostic MCP (Model Context Protocol) server that integrates web crawling with RAG (Retrieval Augmented Generation) capabilities. Built with Crawl4AI for intelligent web scraping and supports multiple vector database backends for flexible deployment.
+A powerful, database-agnostic MCP (Model Context Protocol) server that integrates web crawling with RAG (Retrieval Augmented Generation) capabilities. Built with Crawl4AI for intelligent web scraping and supports multiple AI providers (OpenAI, Ollama, vLLM) and vector database backends for flexible deployment.
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io/)
 
-With this MCP server, you can <b>scrape anything</b> and then <b>use that knowledge anywhere</b> for RAG across **5 different vector database backends**.
+With this MCP server, you can <b>scrape anything</b> and then <b>use that knowledge anywhere</b> for RAG across **5 different vector database backends** and **3 AI providers** (OpenAI, Ollama, vLLM).
 
 ## Overview
 
 ## 🚀 Features
+
+### **Multi-AI Provider Support**
+- **OpenAI**: Production-grade embeddings and LLM (GPT-4, text-embedding-3)
+- **Ollama**: Local AI deployment with privacy-focused models (Llama, nomic-embed-text)
+- **vLLM**: Cloud-deployed text, embedding, and vision models with OpenAI-compatible API
+- **Hybrid Mode**: Mix providers for cost optimization (e.g., vLLM embeddings + OpenAI LLM)
+- **Vision Models**: Multi-modal RAG with image understanding via vLLM (LLaVA, Qwen-VL)
 
 ### **Multi-Database Support**
 - **Supabase**: Production-ready with pgvector support
@@ -23,7 +30,7 @@ With this MCP server, you can <b>scrape anything</b> and then <b>use that knowle
 - **Contextual Embeddings**: LLM-enhanced chunk understanding
 - **Hybrid Search**: Vector similarity + keyword search
 - **Agentic RAG**: Separate code example indexing
-- **Cross-Encoder Reranking**: Improved result relevance
+- **Provider-Agnostic Reranking**: Improved result relevance with Ollama/OpenAI/HuggingFace
 - **Knowledge Graph Integration**: AI hallucination detection
 
 ### **Intelligent Web Crawling**
@@ -64,8 +71,9 @@ uv pip install -e ".[all]"            # All database providers
 crawl4ai-setup
 
 # Configure environment
+export AI_PROVIDER=openai              # or ollama, vllm
 export VECTOR_DB_PROVIDER=sqlite       # or supabase, pinecone, neo4j_vector
-export OPENAI_API_KEY=your_key
+export OPENAI_API_KEY=your_key         # For OpenAI provider
 
 # Run the server
 python src/crawl4ai_mcp_refactored.py
@@ -77,13 +85,15 @@ The Crawl4AI RAG MCP server is just the beginning. Here's where we're headed:
 
 1. **Integration with Archon**: Building this system directly into [Archon](https://github.com/coleam00/Archon) to create a comprehensive knowledge engine for AI coding assistants to build better AI agents.
 
-2. **Multiple Embedding Models**: Expanding beyond OpenAI to support a variety of embedding models, including the ability to run everything locally with Ollama for complete control and privacy.
+2. **✅ Multiple AI Providers**: ~~Expanding beyond OpenAI~~ **COMPLETED** - Full support for OpenAI, Ollama, and vLLM with hybrid configurations for complete control and privacy.
 
-3. **Advanced RAG Strategies**: Implementing sophisticated retrieval techniques like contextual retrieval, late chunking, and others to move beyond basic "naive lookups" and significantly enhance the power and precision of the RAG system, especially as it integrates with Archon.
+3. **✅ Advanced RAG Strategies**: ~~Implementing sophisticated retrieval techniques~~ **COMPLETED** - Contextual embeddings, hybrid search, agentic RAG, and provider-agnostic reranking now available.
 
-4. **Enhanced Chunking Strategy**: Implementing a Context 7-inspired chunking approach that focuses on examples and creates distinct, semantically meaningful sections for each chunk, improving retrieval precision.
+4. **🚧 Multi-Modal RAG (In Progress)**: Adding vision model support for image understanding, enabling search across text, images, and diagrams in documentation. vLLM provider foundation completed (Story 2.1 ✅).
 
-5. **Performance Optimization**: Increasing crawling and indexing speed to make it more realistic to "quickly" index new documentation to then leverage it within the same prompt in an AI coding assistant.
+5. **Enhanced Chunking Strategy**: Implementing a Context 7-inspired chunking approach that focuses on examples and creates distinct, semantically meaningful sections for each chunk, improving retrieval precision.
+
+6. **Performance Optimization**: Increasing crawling and indexing speed to make it more realistic to "quickly" index new documentation to then leverage it within the same prompt in an AI coding assistant.
 
 ## Features
 
@@ -231,22 +241,41 @@ HOST=0.0.0.0
 PORT=8051
 TRANSPORT=sse
 
-# OpenAI API Configuration
-OPENAI_API_KEY=your_openai_api_key
+# AI Provider Selection
+AI_PROVIDER=openai                # Options: openai, ollama, vllm, mixed
+EMBEDDING_PROVIDER=openai         # Optional: override for embeddings
+LLM_PROVIDER=openai              # Optional: override for LLM
 
-# LLM for summaries and contextual embeddings
-MODEL_CHOICE=gpt-4.1-nano
+# OpenAI Configuration (if using OpenAI)
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+OPENAI_LLM_MODEL=gpt-4o-mini
+
+# Ollama Configuration (if using Ollama)
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+OLLAMA_LLM_MODEL=llama3.2:1b
+
+# vLLM Configuration (if using vLLM)
+VLLM_BASE_URL=https://your-vllm-endpoint.com/v1
+VLLM_API_KEY=your_vllm_api_key
+VLLM_TEXT_MODEL=meta-llama/Llama-3.1-8B-Instruct
+VLLM_EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
+VLLM_VISION_ENABLED=false        # Enable vision models (coming soon)
+
+# Vector Database Configuration
+VECTOR_DB_PROVIDER=supabase      # Options: supabase, sqlite, neo4j_vector, pinecone, weaviate
+SUPABASE_URL=your_supabase_project_url
+SUPABASE_SERVICE_KEY=your_supabase_service_key
+EMBEDDING_DIMENSION=1536         # Must match your embedding model dimensions
 
 # RAG Strategies (set to "true" or "false", default to "false")
 USE_CONTEXTUAL_EMBEDDINGS=false
 USE_HYBRID_SEARCH=false
 USE_AGENTIC_RAG=false
 USE_RERANKING=false
+RERANKING_PROVIDER=ollama        # Options: ollama, openai, huggingface
 USE_KNOWLEDGE_GRAPH=false
-
-# Supabase Configuration
-SUPABASE_URL=your_supabase_project_url
-SUPABASE_SERVICE_KEY=your_supabase_service_key
 
 # Neo4j Configuration (required for knowledge graph functionality)
 NEO4J_URI=bolt://localhost:7687
@@ -254,9 +283,11 @@ NEO4J_USER=neo4j
 NEO4J_PASSWORD=your_neo4j_password
 ```
 
+For detailed configuration options and examples, see [CONFIGURATION_GUIDE.md](CONFIGURATION_GUIDE.md).
+
 ### RAG Strategy Options
 
-The Crawl4AI RAG MCP server supports four powerful RAG strategies that can be enabled independently:
+The Crawl4AI RAG MCP server supports five powerful RAG strategies that can be enabled independently:
 
 #### 1. **USE_CONTEXTUAL_EMBEDDINGS**
 When enabled, this strategy enhances each chunk's embedding with additional context from the entire document. The system passes both the full document and the specific chunk to an LLM (configured via `MODEL_CHOICE`) to generate enriched context that gets embedded alongside the chunk content.
@@ -281,11 +312,12 @@ Enables specialized code example extraction and storage. When crawling documenta
 - **Benefits**: Provides a dedicated `search_code_examples` tool that AI agents can use to find specific code implementations.
 
 #### 4. **USE_RERANKING**
-Applies cross-encoder reranking to search results after initial retrieval. Uses a lightweight cross-encoder model (`cross-encoder/ms-marco-MiniLM-L-6-v2`) to score each result against the original query, then reorders results by relevance.
+Provider-agnostic reranking that improves search result relevance. Supports multiple reranking providers (Ollama, OpenAI, HuggingFace) that can be configured independently from your primary AI provider.
 
 - **When to use**: Enable this when search precision is critical and you need the most relevant results at the top. Particularly useful for complex queries where semantic similarity alone might not capture query intent.
-- **Trade-offs**: Adds ~100-200ms to search queries depending on result count, but significantly improves result ordering.
-- **Cost**: No additional API costs - uses a local model that runs on CPU.
+- **Trade-offs**: Adds ~100-200ms to search queries depending on result count and provider, but significantly improves result ordering.
+- **Cost**: Depends on provider - Ollama is free (local), HuggingFace has API costs, OpenAI uses embedding similarity (existing costs).
+- **Configuration**: Set `RERANKING_PROVIDER` to choose provider (defaults to your `AI_PROVIDER`).
 - **Benefits**: Better result relevance, especially for complex queries. Works with both regular RAG search and code example search.
 
 #### 5. **USE_KNOWLEDGE_GRAPH**
