@@ -1,0 +1,51 @@
+schema: 1
+story: "3.2"
+story_title: "Confluence Content Crawler"
+gate: PASS
+status_reason: "All critical findings resolved (page deletion detection, ADF scope prioritization, attachment removal). Two low-severity documentation items remain."
+reviewer: "Quinn (Test Architect)"
+updated: "2026-02-19T18:30:00Z"
+
+waiver: { active: false }
+
+top_issues:
+  - id: "SPEC-3.2-001"
+    severity: low
+    finding: "Confluence Data Center vs Server distinction not documented (DC has clustering considerations)"
+    suggested_action: "Add brief note in Story 3.5 documentation"
+    suggested_owner: dev
+  - id: "FUNC-3.2-004"
+    severity: low
+    finding: "AC 6 lists 'Future' scope items (multi-tab pages) alongside PoC items"
+    suggested_action: "Minor — tasks already correctly prioritize. Can clarify AC text during implementation."
+    suggested_owner: dev
+
+quality_score: 90
+expires: "2026-03-05T18:00:00Z"
+
+evidence:
+  tests_reviewed: 0
+  risks_identified: 2
+  trace:
+    ac_covered: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    ac_gaps: []
+
+nfr_validation:
+  security: { status: PASS, notes: "Permission handling (403 skip) well-specified" }
+  performance: { status: PASS, notes: "Pagination, streaming, configurable page limits addressed" }
+  reliability: { status: PASS, notes: "Comprehensive error handling with graceful degradation" }
+  maintainability: { status: PASS, notes: "Clear output normalization, PoC/enhanced/future tiering" }
+
+recommendations:
+  immediate: []
+  future:
+    - action: "Add Data Center clustering note for rate limiting awareness"
+      refs: ["docs/confluence-setup.md"]
+
+history:
+  - at: "2026-02-19T12:00:00Z"
+    gate: CONCERNS
+    note: "Initial review — missing page deletion detection, ADF scope too large"
+  - at: "2026-02-19T18:30:00Z"
+    gate: PASS
+    note: "Re-review — page deletion added (AC 9), ADF tiered, attachments removed"

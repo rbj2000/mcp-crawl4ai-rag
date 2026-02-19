@@ -1,0 +1,53 @@
+schema: 1
+story: "3.1"
+story_title: "Atlassian Authentication Provider"
+gate: PASS
+status_reason: "All critical findings resolved (OAuth headless flow, SSL certs, auth auto-selection). Two low-severity items remain — acceptable for PoC."
+reviewer: "Quinn (Test Architect)"
+updated: "2026-02-19T18:30:00Z"
+
+waiver: { active: false }
+
+top_issues:
+  - id: "SEC-3.1-003"
+    severity: low
+    finding: "OAuth 2.0 token storage security — env vars only for PoC, no encrypted storage"
+    suggested_action: "Document as future security hardening requirement"
+    suggested_owner: dev
+  - id: "SPEC-3.1-002"
+    severity: low
+    finding: "OAuth redirect URI uses port 8051 which may conflict with MCP server"
+    suggested_action: "Consider separate port (8052) for OAuth callback during implementation"
+    suggested_owner: dev
+
+quality_score: 90
+expires: "2026-03-05T18:00:00Z"
+
+evidence:
+  tests_reviewed: 0
+  risks_identified: 2
+  trace:
+    ac_covered: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    ac_gaps: []
+
+nfr_validation:
+  security: { status: PASS, notes: "All three auth methods specified, SSL config added, no hardcoded credentials" }
+  performance: { status: PASS, notes: "Connection pooling and session reuse specified" }
+  reliability: { status: PASS, notes: "Retry logic, rate limiting, error mapping all covered" }
+  maintainability: { status: PASS, notes: "Clean provider factory pattern, good separation of concerns" }
+
+recommendations:
+  immediate: []
+  future:
+    - action: "Add encrypted token storage for OAuth 2.0 refresh tokens"
+      refs: ["src/atlassian/oauth2_provider.py"]
+    - action: "Use separate port for OAuth callback to avoid MCP server conflict"
+      refs: ["scripts/confluence_oauth_setup.py"]
+
+history:
+  - at: "2026-02-19T12:00:00Z"
+    gate: CONCERNS
+    note: "Initial review — missing SSL certs (SEC-3.1-002), OAuth headless flow (SEC-3.1-001)"
+  - at: "2026-02-19T18:30:00Z"
+    gate: PASS
+    note: "Re-review — all critical findings resolved in v1.1"
