@@ -121,6 +121,8 @@ class Crawl4AIContext:
     reranking_model: Optional[CrossEncoder] = None
     knowledge_validator: Optional[Any] = None  # KnowledgeGraphValidator when available
     repo_extractor: Optional[Any] = None       # DirectNeo4jExtractor when available
+    confluence_crawler: Optional[Any] = None   # ConfluenceCrawler when available
+    confluence_processor: Optional[Any] = None # ConfluenceProcessor when available
 
 @asynccontextmanager
 async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
@@ -189,14 +191,38 @@ async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
             print("Neo4j credentials not configured - knowledge graph tools will be unavailable")
     else:
         print("Knowledge graph functionality disabled - set USE_KNOWLEDGE_GRAPH=true to enable")
-    
+
+    # Initialize Confluence components if configured
+    confluence_crawler_inst = None
+    confluence_processor_inst = None
+    confluence_http_client = None
+    confluence_url = os.getenv("CONFLUENCE_URL")
+    if confluence_url:
+        try:
+            from src.atlassian import AtlassianAuthFactory, ConfluenceCrawler, ConfluenceProcessor
+            from src.atlassian.config import ConfluenceConfig
+            from src.atlassian.base import DeploymentType
+
+            config = ConfluenceConfig.from_env()
+            confluence_http_client = AtlassianAuthFactory.create_http_client(config)
+            confluence_crawler_inst = ConfluenceCrawler(confluence_http_client, config.deployment_type)
+            confluence_processor_inst = ConfluenceProcessor(supabase_client)
+            print("✓ Confluence integration initialized")
+        except Exception as e:
+            print(f"Failed to initialize Confluence: {e}")
+            confluence_crawler_inst = None
+            confluence_processor_inst = None
+            confluence_http_client = None
+
     try:
         yield Crawl4AIContext(
             crawler=crawler,
             supabase_client=supabase_client,
             reranking_model=reranking_model,
             knowledge_validator=knowledge_validator,
-            repo_extractor=repo_extractor
+            repo_extractor=repo_extractor,
+            confluence_crawler=confluence_crawler_inst,
+            confluence_processor=confluence_processor_inst,
         )
     finally:
         # Clean up all components
@@ -213,6 +239,12 @@ async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
                 print("✓ Repository extractor closed")
             except Exception as e:
                 print(f"Error closing repository extractor: {e}")
+        if confluence_http_client:
+            try:
+                await confluence_http_client.close()
+                print("✓ Confluence HTTP client closed")
+            except Exception as e:
+                print(f"Error closing Confluence HTTP client: {e}")
 
 # Initialize FastMCP server
 mcp = FastMCP(
@@ -225,6 +257,262 @@ mcp = FastMCP(
 
 # Note: FastMCP doesn't support HTTP endpoints like Flask/FastAPI
 # Health checking will be done through MCP tools instead
+
+# ---------------------------------------------------------------------------
+# Confluence MCP tools (conditionally registered when CONFLUENCE_URL is set)
+# ---------------------------------------------------------------------------
+if os.getenv("CONFLUENCE_URL"):
+
+    @mcp.tool()
+    async def crawl_confluence_space(ctx: Context, space_key: str, max_pages: int = 500) -> str:
+        """
+        Crawl all pages in a Confluence space and store content for RAG queries.
+
+        This tool fetches every page in the given space, converts content to Markdown,
+        chunks it, generates embeddings, and stores everything in the vector database.
+
+        Args:
+            ctx: The MCP server provided context
+            space_key: The Confluence space key (e.g. "DEV", "ENG")
+            max_pages: Maximum number of pages to crawl (default: 500)
+
+        Returns:
+            JSON string with crawl and storage summary
+        """
+        try:
+            confluence_crawler = ctx.request_context.lifespan_context.confluence_crawler
+            confluence_processor = ctx.request_context.lifespan_context.confluence_processor
+
+            if not confluence_crawler or not confluence_processor:
+                return json.dumps({
+                    "success": False,
+                    "error": "Confluence integration not initialized. Check CONFLUENCE_URL and credentials."
+                }, indent=2)
+
+            # Override max_pages for this crawl
+            original_max = confluence_crawler.max_pages
+            confluence_crawler.max_pages = max_pages
+            try:
+                crawl_result = await confluence_crawler.crawl_space(space_key)
+            finally:
+                confluence_crawler.max_pages = original_max
+
+            processing_result = await confluence_processor.process_crawl_result(crawl_result)
+
+            return json.dumps({
+                "success": True,
+                "space_key": space_key,
+                "pages_crawled": crawl_result.summary.pages_succeeded,
+                "pages_failed": crawl_result.summary.pages_failed,
+                "chunks_stored": processing_result.summary.total_chunks_stored,
+                "code_examples_stored": processing_result.summary.total_code_examples_stored,
+                "source_id": processing_result.source_id,
+                "errors": crawl_result.summary.errors[:10] if crawl_result.summary.errors else [],
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({
+                "success": False,
+                "space_key": space_key,
+                "error": str(e),
+            }, indent=2)
+
+    @mcp.tool()
+    async def crawl_confluence_page(
+        ctx: Context,
+        page_id: str = None,
+        page_url: str = None,
+        include_children: bool = False,
+        max_depth: int = 5,
+    ) -> str:
+        """
+        Crawl a single Confluence page (or a page tree) and store content for RAG queries.
+
+        Provide either page_id or page_url. When include_children is True, the tool
+        performs a breadth-first crawl of the page tree up to max_depth levels.
+
+        Args:
+            ctx: The MCP server provided context
+            page_id: Confluence page ID (numeric string)
+            page_url: Full URL of the Confluence page
+            include_children: If True, also crawl child pages recursively (default: False)
+            max_depth: Maximum depth when crawling children (default: 5)
+
+        Returns:
+            JSON string with crawl and storage summary
+        """
+        try:
+            if not page_id and not page_url:
+                return json.dumps({
+                    "success": False,
+                    "error": "Either page_id or page_url is required.",
+                }, indent=2)
+
+            confluence_crawler = ctx.request_context.lifespan_context.confluence_crawler
+            confluence_processor = ctx.request_context.lifespan_context.confluence_processor
+
+            if not confluence_crawler or not confluence_processor:
+                return json.dumps({
+                    "success": False,
+                    "error": "Confluence integration not initialized. Check CONFLUENCE_URL and credentials."
+                }, indent=2)
+
+            from src.atlassian.confluence_crawler import CrawlResult
+
+            if page_url and not page_id:
+                page = await confluence_crawler.crawl_page_by_url(page_url)
+                page_id = page.page_id
+                if not include_children:
+                    crawl_result = CrawlResult(pages=[page])
+                    crawl_result.summary.pages_succeeded = 1
+                    crawl_result.summary.page_ids_crawled.add(page_id)
+                else:
+                    original_depth = confluence_crawler.max_depth
+                    confluence_crawler.max_depth = max_depth
+                    try:
+                        crawl_result = await confluence_crawler.crawl_page_tree(page_id)
+                    finally:
+                        confluence_crawler.max_depth = original_depth
+            elif include_children:
+                original_depth = confluence_crawler.max_depth
+                confluence_crawler.max_depth = max_depth
+                try:
+                    crawl_result = await confluence_crawler.crawl_page_tree(page_id)
+                finally:
+                    confluence_crawler.max_depth = original_depth
+            else:
+                page = await confluence_crawler.crawl_page(page_id)
+                crawl_result = CrawlResult(pages=[page])
+                crawl_result.summary.pages_succeeded = 1
+                crawl_result.summary.page_ids_crawled.add(page_id)
+
+            processing_result = await confluence_processor.process_crawl_result(crawl_result)
+
+            return json.dumps({
+                "success": True,
+                "page_id": page_id,
+                "pages_crawled": crawl_result.summary.pages_succeeded,
+                "pages_failed": crawl_result.summary.pages_failed,
+                "chunks_stored": processing_result.summary.total_chunks_stored,
+                "code_examples_stored": processing_result.summary.total_code_examples_stored,
+                "source_id": processing_result.source_id,
+                "include_children": include_children,
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({
+                "success": False,
+                "page_id": page_id,
+                "page_url": page_url,
+                "error": str(e),
+            }, indent=2)
+
+    @mcp.tool()
+    async def get_confluence_sources(ctx: Context) -> str:
+        """
+        List all Confluence sources that have been crawled and stored.
+
+        Returns source IDs, summaries, word counts, and chunk counts for each
+        Confluence space that has been ingested. Useful for discovering what
+        Confluence content is available for RAG queries.
+
+        Args:
+            ctx: The MCP server provided context
+
+        Returns:
+            JSON string with the list of Confluence sources and their details
+        """
+        try:
+            supabase_client = ctx.request_context.lifespan_context.supabase_client
+
+            # Query sources table for confluence sources
+            result = supabase_client.from_('sources')\
+                .select('*')\
+                .like('source_id', 'confluence:%')\
+                .order('source_id')\
+                .execute()
+
+            sources = []
+            if result.data:
+                for source in result.data:
+                    source_id = source.get("source_id")
+
+                    # Get chunk count for this source
+                    chunk_result = supabase_client.from_('crawled_pages')\
+                        .select('id', count='exact')\
+                        .eq('source_id', source_id)\
+                        .execute()
+                    chunk_count = chunk_result.count if chunk_result.count is not None else 0
+
+                    sources.append({
+                        "source_id": source_id,
+                        "summary": source.get("summary"),
+                        "total_words": source.get("total_words"),
+                        "chunk_count": chunk_count,
+                        "created_at": source.get("created_at"),
+                        "updated_at": source.get("updated_at"),
+                    })
+
+            return json.dumps({
+                "success": True,
+                "sources": sources,
+                "count": len(sources),
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({
+                "success": False,
+                "error": str(e),
+            }, indent=2)
+
+    @mcp.tool()
+    async def sync_confluence_space(ctx: Context, space_key: str, force_full: bool = False) -> str:
+        """
+        Sync a previously crawled Confluence space, updating only changed pages.
+
+        By default performs an incremental sync — pages whose last_modified timestamp
+        hasn't changed are skipped. Set force_full=True to re-process every page and
+        also detect deleted pages whose chunks should be removed.
+
+        Args:
+            ctx: The MCP server provided context
+            space_key: The Confluence space key (e.g. "DEV", "ENG")
+            force_full: If True, reprocess all pages and delete orphaned chunks (default: False)
+
+        Returns:
+            JSON string with sync summary including pages updated, unchanged, and deleted
+        """
+        try:
+            confluence_crawler = ctx.request_context.lifespan_context.confluence_crawler
+            confluence_processor = ctx.request_context.lifespan_context.confluence_processor
+
+            if not confluence_crawler or not confluence_processor:
+                return json.dumps({
+                    "success": False,
+                    "error": "Confluence integration not initialized. Check CONFLUENCE_URL and credentials."
+                }, indent=2)
+
+            crawl_result = await confluence_crawler.crawl_space(space_key)
+            processing_result = await confluence_processor.process_crawl_result(
+                crawl_result, detect_deletions=force_full
+            )
+
+            return json.dumps({
+                "success": True,
+                "space_key": space_key,
+                "force_full": force_full,
+                "pages_checked": crawl_result.summary.pages_succeeded,
+                "pages_updated": processing_result.summary.pages_processed,
+                "pages_unchanged": processing_result.summary.pages_skipped_unchanged,
+                "pages_skipped_empty": processing_result.summary.pages_skipped_empty,
+                "pages_failed": processing_result.summary.pages_failed,
+                "chunks_stored": processing_result.summary.total_chunks_stored,
+                "orphaned_deleted": processing_result.summary.orphaned_pages_deleted,
+                "source_id": processing_result.source_id,
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({
+                "success": False,
+                "space_key": space_key,
+                "error": str(e),
+            }, indent=2)
 
 @mcp.tool()
 async def health_check(ctx: Context) -> str:
@@ -924,20 +1212,22 @@ async def get_available_sources(ctx: Context) -> str:
         }, indent=2)
 
 @mcp.tool()
-async def perform_rag_query(ctx: Context, query: str, source: str = None, match_count: int = 5) -> str:
+async def perform_rag_query(ctx: Context, query: str, source: str = None, match_count: int = 5, source_type: str = None) -> str:
     """
     Perform a RAG (Retrieval Augmented Generation) query on the stored content.
-    
+
     This tool searches the vector database for content relevant to the query and returns
-    the matching documents. Optionally filter by source domain.
+    the matching documents. Optionally filter by source domain and/or source type.
     Get the source by using the get_available_sources tool before calling this search!
-    
+
     Args:
         ctx: The MCP server provided context
         query: The search query
         source: Optional source domain to filter results (e.g., 'example.com')
         match_count: Maximum number of results to return (default: 5)
-    
+        source_type: Optional content type filter: "confluence" (only Confluence content),
+                     "web" (only web-crawled content), or None/omit for all content
+
     Returns:
         JSON string with the search results
     """
@@ -955,7 +1245,7 @@ async def perform_rag_query(ctx: Context, query: str, source: str = None, match_
         
         if use_hybrid_search:
             # Hybrid search: combine vector and keyword search
-            
+
             # 1. Get vector search results (get more to account for filtering)
             vector_results = search_documents(
                 client=supabase_client,
@@ -963,16 +1253,28 @@ async def perform_rag_query(ctx: Context, query: str, source: str = None, match_
                 match_count=match_count * 2,  # Get double to have room for filtering
                 filter_metadata=filter_metadata
             )
-            
+
+            # Apply source_type post-filter to vector results
+            if source_type == "confluence":
+                vector_results = [r for r in vector_results if r.get("source_id", "").startswith("confluence:")]
+            elif source_type == "web":
+                vector_results = [r for r in vector_results if not r.get("source_id", "").startswith("confluence:")]
+
             # 2. Get keyword search results using ILIKE
             keyword_query = supabase_client.from_('crawled_pages')\
                 .select('id, url, chunk_number, content, metadata, source_id')\
                 .ilike('content', f'%{query}%')
-            
+
             # Apply source filter if provided
             if source and source.strip():
                 keyword_query = keyword_query.eq('source_id', source)
-            
+
+            # Apply source_type filter
+            if source_type == "confluence":
+                keyword_query = keyword_query.like('source_id', 'confluence:%')
+            elif source_type == "web":
+                keyword_query = keyword_query.not_.like('source_id', 'confluence:%')
+
             # Execute keyword search
             keyword_response = keyword_query.limit(match_count * 2).execute()
             keyword_results = keyword_response.data if keyword_response.data else []
@@ -1023,10 +1325,18 @@ async def perform_rag_query(ctx: Context, query: str, source: str = None, match_
             results = search_documents(
                 client=supabase_client,
                 query=query,
-                match_count=match_count,
+                match_count=match_count * 2 if source_type else match_count,
                 filter_metadata=filter_metadata
             )
-        
+
+            # Apply source_type post-filter
+            if source_type == "confluence":
+                results = [r for r in results if r.get("source_id", "").startswith("confluence:")]
+            elif source_type == "web":
+                results = [r for r in results if not r.get("source_id", "").startswith("confluence:")]
+
+            results = results[:match_count]
+
         # Apply reranking if enabled
         use_reranking = os.getenv("USE_RERANKING", "false") == "true"
         if use_reranking and ctx.request_context.lifespan_context.reranking_model:
@@ -1050,6 +1360,7 @@ async def perform_rag_query(ctx: Context, query: str, source: str = None, match_
             "success": True,
             "query": query,
             "source_filter": source,
+            "source_type_filter": source_type,
             "search_mode": "hybrid" if use_hybrid_search else "vector",
             "reranking_applied": use_reranking and ctx.request_context.lifespan_context.reranking_model is not None,
             "results": formatted_results,
