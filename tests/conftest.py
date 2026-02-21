@@ -73,6 +73,14 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.requires_docker)
         elif "test_epic_stories" in item.nodeid:
             item.add_marker(pytest.mark.story)
+        elif "test_reranking_providers" in item.nodeid:
+            item.add_marker(pytest.mark.reranking)
+            item.add_marker(pytest.mark.reranking_unit)
+            item.add_marker(pytest.mark.unit)
+        elif "test_reranking_integration" in item.nodeid:
+            item.add_marker(pytest.mark.reranking)
+            item.add_marker(pytest.mark.reranking_integration)
+            item.add_marker(pytest.mark.integration)
         
         # Add skip conditions based on configuration
         if item.get_closest_marker("integration") and not TEST_CONFIG["enable_integration_tests"]:
@@ -486,3 +494,112 @@ def story3_acceptance_criteria():
         {"id": "S3-AC4", "description": "Docker Ollama integration", "priority": "should"},
         {"id": "S3-AC5", "description": "Migration guidance", "priority": "should"}
     ]
+
+
+# Reranking-specific fixtures
+
+@pytest.fixture
+def reranking_provider_configs():
+    """Reranking provider configurations fixture."""
+    return {
+        "openai": {
+            "provider": "openai",
+            "api_key": "sk-test-key-reranking",
+            "embedding_model": "text-embedding-3-small",
+            "reranking_method": "similarity_based"
+        },
+        "ollama": {
+            "provider": "ollama",
+            "base_url": "http://localhost:11434",
+            "reranking_model": "bge-reranker-base",
+            "timeout": 120
+        },
+        "huggingface": {
+            "provider": "huggingface",
+            "reranking_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+            "device": "cpu",
+            "batch_size": 32
+        }
+    }
+
+
+@pytest.fixture
+def reranking_test_queries():
+    """Test queries for reranking evaluation."""
+    return [
+        "machine learning algorithms",
+        "deep neural networks",
+        "natural language processing",
+        "computer vision techniques",
+        "artificial intelligence systems",
+        "data science methods",
+        "software engineering practices",
+        "database optimization",
+        "web development frameworks",
+        "cloud computing platforms"
+    ]
+
+
+@pytest.fixture
+def reranking_test_documents():
+    """Test documents for reranking evaluation."""
+    return [
+        {
+            "content": "Machine learning is a method of data analysis that automates analytical model building. It is a branch of artificial intelligence based on the idea that systems can learn from data, identify patterns and make decisions with minimal human intervention.",
+            "url": "https://example.com/ml-intro",
+            "metadata": {"topic": "machine_learning", "difficulty": "beginner", "type": "introduction"}
+        },
+        {
+            "content": "Deep learning is part of a broader family of machine learning methods based on artificial neural networks with representation learning. Learning can be supervised, semi-supervised or unsupervised.",
+            "url": "https://example.com/deep-learning",
+            "metadata": {"topic": "deep_learning", "difficulty": "intermediate", "type": "technical"}
+        },
+        {
+            "content": "Natural language processing (NLP) is a subfield of linguistics, computer science, and artificial intelligence concerned with the interactions between computers and human language, in particular how to program computers to process and analyze large amounts of natural language data.",
+            "url": "https://example.com/nlp",
+            "metadata": {"topic": "nlp", "difficulty": "intermediate", "type": "definition"}
+        },
+        {
+            "content": "Computer vision is an interdisciplinary scientific field that deals with how computers can gain high-level understanding from digital images or videos. From the perspective of engineering, it seeks to understand and automate tasks that the human visual system can do.",
+            "url": "https://example.com/computer-vision",
+            "metadata": {"topic": "computer_vision", "difficulty": "advanced", "type": "overview"}
+        },
+        {
+            "content": "Artificial intelligence (AI) is intelligence demonstrated by machines, in contrast to the natural intelligence displayed by humans and animals. Leading AI textbooks define the field as the study of intelligent agents.",
+            "url": "https://example.com/ai-overview",
+            "metadata": {"topic": "artificial_intelligence", "difficulty": "beginner", "type": "overview"}
+        }
+    ]
+
+
+@pytest.fixture
+def reranking_environment_configs():
+    """Environment configurations for reranking tests."""
+    return {
+        "reranking_enabled": {
+            "USE_RERANKING": "true",
+            "RERANKING_PROVIDER": "openai",
+            "OPENAI_API_KEY": "sk-test-key"
+        },
+        "reranking_disabled": {
+            "USE_RERANKING": "false"
+        },
+        "ollama_reranking": {
+            "USE_RERANKING": "true",
+            "RERANKING_PROVIDER": "ollama",
+            "OLLAMA_BASE_URL": "http://localhost:11434",
+            "OLLAMA_RERANKING_MODEL": "bge-reranker-base"
+        },
+        "huggingface_reranking": {
+            "USE_RERANKING": "true",
+            "RERANKING_PROVIDER": "huggingface",
+            "HF_RERANKING_MODEL": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+            "HF_DEVICE": "cpu"
+        },
+        "mixed_strategies": {
+            "USE_RERANKING": "true",
+            "USE_CONTEXTUAL_EMBEDDINGS": "true",
+            "USE_HYBRID_SEARCH": "true",
+            "RERANKING_PROVIDER": "openai"
+        }
+    }

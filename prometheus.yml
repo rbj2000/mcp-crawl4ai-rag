@@ -1,0 +1,41 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # vLLM Text Server
+  - job_name: 'vllm-text'
+    static_configs:
+      - targets: ['vllm-text:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # vLLM Embedding Server
+  - job_name: 'vllm-embedding'
+    static_configs:
+      - targets: ['vllm-embedding:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # vLLM Vision Server
+  - job_name: 'vllm-vision'
+    static_configs:
+      - targets: ['vllm-vision:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Nginx metrics (if available)
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx-proxy:80']
+    metrics_path: '/nginx_status'
+    scrape_interval: 30s

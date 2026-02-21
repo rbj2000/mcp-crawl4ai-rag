@@ -6,7 +6,6 @@ the appropriate crawl method based on URL type (sitemap, txt file, or regular we
 Also includes AI hallucination detection and repository parsing tools using Neo4j knowledge graphs.
 """
 from mcp.server.fastmcp import FastMCP, Context
-from sentence_transformers import CrossEncoder
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -29,6 +28,11 @@ from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 # Add knowledge_graphs folder to path for importing knowledge graph modules
 knowledge_graphs_path = Path(__file__).resolve().parent.parent / 'knowledge_graphs'
 sys.path.append(str(knowledge_graphs_path))
+
+# Import AI provider system
+from ai_providers.config import AIProviderConfig
+from ai_providers.factory import AIProviderFactory
+from ai_providers.base import RerankingProvider, RerankingResult
 
 from utils import (
     get_supabase_client, 
@@ -118,7 +122,7 @@ class Crawl4AIContext:
     """Context for the Crawl4AI MCP server."""
     crawler: AsyncWebCrawler
     supabase_client: Client
-    reranking_model: Optional[CrossEncoder] = None
+    reranking_provider: Optional[RerankingProvider] = None
     knowledge_validator: Optional[Any] = None  # KnowledgeGraphValidator when available
     repo_extractor: Optional[Any] = None       # DirectNeo4jExtractor when available
 
@@ -146,14 +150,68 @@ async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
     # Initialize Supabase client
     supabase_client = get_supabase_client()
     
-    # Initialize cross-encoder model for reranking if enabled
-    reranking_model = None
+    # Initialize reranking provider if enabled
+    reranking_provider = None
+    print("=== Reranking Configuration ===")
     if os.getenv("USE_RERANKING", "false") == "true":
         try:
-            reranking_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+            # Create AI provider configuration with reranking settings
+            provider_config = AIProviderConfig.from_env()
+            reranking_config = provider_config.get_reranking_config()
+            
+            # Log reranking configuration
+            reranking_provider_name = os.getenv("RERANKING_PROVIDER", "huggingface").lower()
+            reranking_model = os.getenv("RERANKING_MODEL", "default")
+            
+            print(f"✓ Reranking enabled: {reranking_config.get('use_reranking', False)}")
+            print(f"✓ Reranking provider: {reranking_provider_name}")
+            print(f"✓ Reranking model: {reranking_model}")
+            print(f"✓ Max results: {reranking_config.get('reranking_max_results', 100)}")
+            print(f"✓ Timeout: {reranking_config.get('reranking_timeout', 30.0)}s")
+            
+            if reranking_provider_name == "huggingface":
+                from ai_providers.base import AIProvider
+                reranking_provider = AIProviderFactory.create_reranking_provider(
+                    AIProvider.HUGGINGFACE, 
+                    provider_config.get_reranking_config()
+                )
+            elif reranking_provider_name == "openai":
+                from ai_providers.base import AIProvider
+                # OpenAI provider supports reranking via similarity
+                openai_provider = AIProviderFactory.create_provider(
+                    AIProvider.OPENAI,
+                    provider_config.config
+                )
+                if hasattr(openai_provider, 'rerank_results'):
+                    reranking_provider = openai_provider
+            elif reranking_provider_name == "ollama":
+                from ai_providers.base import AIProvider
+                # Ollama provider supports reranking via bge-reranker models
+                ollama_provider = AIProviderFactory.create_provider(
+                    AIProvider.OLLAMA,
+                    provider_config.config
+                )
+                if hasattr(ollama_provider, 'rerank_results'):
+                    reranking_provider = ollama_provider
+            
+            if reranking_provider:
+                await reranking_provider.initialize()
+                print(f"✅ {reranking_provider_name.capitalize()} reranking provider initialized successfully")
+                
+                # Log available models if possible
+                if hasattr(reranking_provider, 'get_reranking_models'):
+                    available_models = reranking_provider.get_reranking_models()
+                    if available_models:
+                        print(f"   Available models: {', '.join(available_models)}")
+            else:
+                print(f"❌ Failed to create {reranking_provider_name} reranking provider")
+                
         except Exception as e:
-            print(f"Failed to load reranking model: {e}")
-            reranking_model = None
+            print(f"❌ Failed to initialize reranking provider: {e}")
+            reranking_provider = None
+    else:
+        print("✗ Reranking disabled (USE_RERANKING=false)")
+    print("=" * 35)
     
     # Initialize Neo4j components if configured and enabled
     knowledge_validator = None
@@ -194,13 +252,22 @@ async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
         yield Crawl4AIContext(
             crawler=crawler,
             supabase_client=supabase_client,
-            reranking_model=reranking_model,
+            reranking_provider=reranking_provider,
             knowledge_validator=knowledge_validator,
             repo_extractor=repo_extractor
         )
     finally:
         # Clean up all components
         await crawler.__aexit__(None, None, None)
+        
+        # Close reranking provider if initialized
+        if reranking_provider:
+            try:
+                await reranking_provider.close()
+                print("✓ Reranking provider closed")
+            except Exception as e:
+                print(f"Error closing reranking provider: {e}")
+        
         if knowledge_validator:
             try:
                 await knowledge_validator.close()
@@ -374,42 +441,46 @@ async def health_check(ctx: Context) -> str:
     
     return json.dumps(health_status, indent=2)
 
-def rerank_results(model: CrossEncoder, query: str, results: List[Dict[str, Any]], content_key: str = "content") -> List[Dict[str, Any]]:
+async def rerank_results_with_provider(
+    provider: RerankingProvider, 
+    query: str, 
+    results: List[Dict[str, Any]], 
+    content_key: str = "content"
+) -> List[Dict[str, Any]]:
     """
-    Rerank search results using a cross-encoder model.
+    Rerank search results using a provider-based reranking system.
     
     Args:
-        model: The cross-encoder model to use for reranking
+        provider: The reranking provider to use
         query: The search query
-        results: List of search results
-        content_key: The key in each result dict that contains the text content
-        
+        results: List of search results to rerank
+        content_key: Key in results dict that contains the content to rerank
+    
     Returns:
-        Reranked list of results
+        List of reranked results sorted by relevance score
     """
-    if not model or not results:
+    if not results or not provider:
         return results
     
     try:
-        # Extract content from results
-        texts = [result.get(content_key, "") for result in results]
+        # Ensure all results have the expected content structure
+        processed_results = []
+        for result in results:
+            processed_result = result.copy()
+            content = result.get(content_key, "")
+            if not isinstance(content, str):
+                content = str(content)
+            processed_result["content"] = content
+            processed_results.append(processed_result)
         
-        # Create pairs of [query, document] for the cross-encoder
-        pairs = [[query, text] for text in texts]
+        # Use the provider to rerank results
+        reranking_result = await provider.rerank_results(query, processed_results)
         
-        # Get relevance scores from the cross-encoder
-        scores = model.predict(pairs)
-        
-        # Add scores to results and sort by score (descending)
-        for i, result in enumerate(results):
-            result["rerank_score"] = float(scores[i])
-        
-        # Sort by rerank score
-        reranked = sorted(results, key=lambda x: x.get("rerank_score", 0), reverse=True)
-        
-        return reranked
+        # Return the reranked results
+        return reranking_result.results
+    
     except Exception as e:
-        print(f"Error during reranking: {e}")
+        print(f"Error during provider-based reranking: {e}")
         return results
 
 def is_sitemap(url: str) -> bool:
@@ -1029,8 +1100,13 @@ async def perform_rag_query(ctx: Context, query: str, source: str = None, match_
         
         # Apply reranking if enabled
         use_reranking = os.getenv("USE_RERANKING", "false") == "true"
-        if use_reranking and ctx.request_context.lifespan_context.reranking_model:
-            results = rerank_results(ctx.request_context.lifespan_context.reranking_model, query, results, content_key="content")
+        if use_reranking and ctx.request_context.lifespan_context.reranking_provider:
+            results = await rerank_results_with_provider(
+                ctx.request_context.lifespan_context.reranking_provider, 
+                query, 
+                results, 
+                content_key="content"
+            )
         
         # Format the results
         formatted_results = []
@@ -1051,7 +1127,7 @@ async def perform_rag_query(ctx: Context, query: str, source: str = None, match_
             "query": query,
             "source_filter": source,
             "search_mode": "hybrid" if use_hybrid_search else "vector",
-            "reranking_applied": use_reranking and ctx.request_context.lifespan_context.reranking_model is not None,
+            "reranking_applied": use_reranking and ctx.request_context.lifespan_context.reranking_provider is not None,
             "results": formatted_results,
             "count": len(formatted_results)
         }, indent=2)
@@ -1184,8 +1260,13 @@ async def search_code_examples(ctx: Context, query: str, source_id: str = None, 
         
         # Apply reranking if enabled
         use_reranking = os.getenv("USE_RERANKING", "false") == "true"
-        if use_reranking and ctx.request_context.lifespan_context.reranking_model:
-            results = rerank_results(ctx.request_context.lifespan_context.reranking_model, query, results, content_key="content")
+        if use_reranking and ctx.request_context.lifespan_context.reranking_provider:
+            results = await rerank_results_with_provider(
+                ctx.request_context.lifespan_context.reranking_provider, 
+                query, 
+                results, 
+                content_key="content"
+            )
         
         # Format the results
         formatted_results = []
@@ -1208,7 +1289,7 @@ async def search_code_examples(ctx: Context, query: str, source_id: str = None, 
             "query": query,
             "source_filter": source_id,
             "search_mode": "hybrid" if use_hybrid_search else "vector",
-            "reranking_applied": use_reranking and ctx.request_context.lifespan_context.reranking_model is not None,
+            "reranking_applied": use_reranking and ctx.request_context.lifespan_context.reranking_provider is not None,
             "results": formatted_results,
             "count": len(formatted_results)
         }, indent=2)

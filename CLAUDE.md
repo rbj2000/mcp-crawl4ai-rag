@@ -7,10 +7,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is a Model Context Protocol (MCP) server that integrates Crawl4AI with multiple vector databases and AI providers for advanced web crawling and RAG (Retrieval Augmented Generation) capabilities. The server enables AI agents and coding assistants to crawl websites, store content in vector databases, and perform intelligent document retrieval with optional AI hallucination detection using Neo4j knowledge graphs.
 
 **Key Features:**
-- **Multi-AI Provider Support**: OpenAI, Ollama, and hybrid configurations
+- **Multi-AI Provider Support**: OpenAI, Ollama, vLLM, and hybrid configurations
+- **Multi-Modal RAG**: Text, image, and vision model support via vLLM
 - **Multiple Vector Databases**: Supabase, SQLite, Neo4j, Pinecone, Weaviate
 - **Flexible Deployment**: Docker orchestration with various provider combinations
-- **Cost Optimization**: Mix providers (e.g., OpenAI embeddings + Ollama LLM)
+- **Cost Optimization**: Mix providers (e.g., vLLM embeddings + OpenAI LLM)
 - **Privacy Options**: Fully local deployment with Ollama
 - **Enterprise Ready**: Production deployment with monitoring and health checks
 
@@ -51,11 +52,17 @@ uv pip install -e .
 crawl4ai-setup
 
 # Configure AI provider (examples)
-export AI_PROVIDER=openai  # or ollama, mixed
+export AI_PROVIDER=openai  # or ollama, vllm, mixed
 export OPENAI_API_KEY=your_key
+
 # OR for Ollama
 export AI_PROVIDER=ollama
 export OLLAMA_BASE_URL=http://localhost:11434
+
+# OR for vLLM
+export AI_PROVIDER=vllm
+export VLLM_BASE_URL=https://your-vllm-endpoint.com/v1
+export VLLM_API_KEY=your_vllm_api_key
 
 # Run the MCP server
 uv run src/crawl4ai_mcp.py
@@ -87,8 +94,10 @@ Execute the SQL schema in `crawled_pages.sql` in your Supabase dashboard to crea
 - Abstract provider interface for consistent API
 - OpenAI provider for production-grade embeddings and LLM
 - Ollama provider for local, privacy-focused AI processing
+- vLLM provider for cloud-deployed text, embedding, and vision models
 - Factory pattern for dynamic provider selection
 - Health monitoring and automatic failover
+- Multi-modal support via VisionProvider interface
 
 **Utilities** (`src/utils_refactored.py`):
 - Multi-provider client management with backward compatibility
@@ -110,13 +119,15 @@ The server supports multiple AI providers with flexible configuration:
 **Provider Options:**
 - **OpenAI**: Production-grade, high-accuracy embeddings and LLM
 - **Ollama**: Local deployment, privacy-focused, customizable models
-- **Hybrid**: Mix providers (e.g., OpenAI embeddings + Ollama LLM for cost optimization)
+- **vLLM**: Cloud-deployed text, embedding, and vision models with OpenAI-compatible API
+- **Hybrid**: Mix providers (e.g., vLLM embeddings + OpenAI LLM for cost optimization)
 
 **Key Benefits:**
 - **Cost Control**: Use expensive providers selectively
 - **Privacy**: Keep sensitive data local with Ollama
 - **Reliability**: Automatic failover between providers
 - **Performance**: Choose optimal provider for each task
+- **Multi-Modal**: Vision models for image understanding via vLLM
 
 ### RAG Strategy Configuration
 
@@ -125,8 +136,46 @@ The server supports five configurable RAG strategies via environment variables:
 1. **USE_CONTEXTUAL_EMBEDDINGS**: Enriches chunks with document context using LLM
 2. **USE_HYBRID_SEARCH**: Combines vector similarity with keyword search
 3. **USE_AGENTIC_RAG**: Extracts and indexes code examples separately
-4. **USE_RERANKING**: Cross-encoder reranking for improved relevance
+4. **USE_RERANKING**: Provider-agnostic reranking for improved relevance
 5. **USE_KNOWLEDGE_GRAPH**: Neo4j-based hallucination detection
+
+#### Reranking Configuration (Story 1.1)
+
+**Provider-Agnostic Reranking** supports multiple AI providers:
+
+```bash
+# Enable reranking with provider selection
+USE_RERANKING=true
+RERANKING_PROVIDER=ollama  # or openai, huggingface
+RERANKING_MODEL=bge-reranker-base  # provider-specific model
+
+# Ollama reranking (recommended for local deployment)
+RERANKING_PROVIDER=ollama
+RERANKING_MODEL=bge-reranker-base  # or bge-reranker-large
+
+# OpenAI reranking (similarity-based using embeddings)
+RERANKING_PROVIDER=openai
+# No model needed - uses existing embedding similarity
+
+# HuggingFace reranking (direct migration from legacy)
+RERANKING_PROVIDER=huggingface
+RERANKING_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
+HUGGINGFACE_API_KEY=your_hf_token  # Required for model access
+```
+
+**Configuration Fallbacks:**
+- If `RERANKING_PROVIDER` not specified, uses same provider as `AI_PROVIDER`
+- If `RERANKING_MODEL` not specified, uses provider-specific default
+- If provider doesn't support reranking, gracefully falls back to no reranking
+
+**Configuration Validation:**
+```bash
+# Validate reranking configuration
+python3 scripts/validate_reranking_config.py
+
+# Or with direct execution
+./scripts/validate_reranking_config.py
+```
 
 ### Database Schema
 
@@ -161,11 +210,11 @@ The server supports five configurable RAG strategies via environment variables:
 **Primary Provider Selection:**
 ```bash
 # Choose primary AI provider
-AI_PROVIDER=openai|ollama|mixed
+AI_PROVIDER=openai|ollama|vllm|mixed
 
 # Or specify providers separately
-EMBEDDING_PROVIDER=openai|ollama
-LLM_PROVIDER=openai|ollama
+EMBEDDING_PROVIDER=openai|ollama|vllm
+LLM_PROVIDER=openai|ollama|vllm
 ```
 
 **OpenAI Configuration:**
@@ -183,6 +232,97 @@ OLLAMA_EMBEDDING_MODEL=nomic-embed-text
 OLLAMA_LLM_MODEL=llama3.2:1b
 OLLAMA_EMBEDDING_DIMENSIONS=768
 ```
+
+**vLLM Configuration (Story 2.1):**
+```bash
+# vLLM Endpoint Configuration
+VLLM_BASE_URL=https://your-vllm-endpoint.com/v1
+VLLM_API_KEY=your_vllm_api_key
+
+# Text and Embedding Models
+VLLM_TEXT_MODEL=meta-llama/Llama-3.1-8B-Instruct
+VLLM_EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
+VLLM_EMBEDDING_DIMENSIONS=1024
+
+# Vision Model Configuration (for multi-modal RAG)
+VLLM_VISION_MODEL=llava-hf/llava-v1.6-mistral-7b-hf
+VLLM_VISION_ENABLED=true
+
+# Performance Tuning
+VLLM_MAX_BATCH_SIZE=32
+VLLM_MAX_RETRIES=3
+VLLM_TIMEOUT=120.0
+```
+
+**vLLM Provider Features:**
+- **Text Embeddings**: High-quality embeddings via BAAI/bge models
+- **LLM Generation**: Llama 3.1, Mistral, Mixtral models for text generation
+- **Vision Models**: LLaVA, Qwen-VL, Phi-3-Vision for image understanding
+- **OpenAI-Compatible API**: Seamless integration with existing OpenAI patterns
+- **Cloud Deployment**: Connect to remote vLLM instances via HTTP API
+- **Graceful Degradation**: Automatic fallback when endpoints unavailable
+
+**vLLM Supported Models:**
+
+Text Models:
+- `meta-llama/Llama-3.1-8B-Instruct` (default, 8K context)
+- `meta-llama/Llama-3.1-70B-Instruct` (high quality, 8K context)
+- `mistralai/Mistral-7B-Instruct-v0.3` (fast inference)
+- `mistralai/Mixtral-8x7B-Instruct-v0.1` (MoE architecture)
+
+Embedding Models:
+- `BAAI/bge-large-en-v1.5` (1024 dims, default, best quality)
+- `BAAI/bge-base-en-v1.5` (768 dims, balanced)
+- `sentence-transformers/all-MiniLM-L6-v2` (384 dims, fast)
+
+Vision Models:
+- `llava-hf/llava-v1.6-mistral-7b-hf` (default, high quality captions)
+- `llava-hf/llava-v1.6-vicuna-7b-hf` (alternative base)
+- `Qwen/Qwen2-VL-7B-Instruct` (multilingual support)
+- `microsoft/Phi-3-vision-128k-instruct` (long context)
+
+**vLLM Deployment Guide:**
+
+1. **Deploy vLLM Server** (separate infrastructure):
+```bash
+# Example: Deploy vLLM with embedding + vision models
+docker run --gpus all -p 8000:8000 \
+  vllm/vllm-openai:latest \
+  --model BAAI/bge-large-en-v1.5 \
+  --trust-remote-code
+
+# Or deploy with vision model
+docker run --gpus all -p 8001:8000 \
+  vllm/vllm-openai:latest \
+  --model llava-hf/llava-v1.6-mistral-7b-hf \
+  --trust-remote-code
+```
+
+2. **Configure MCP Server** to connect to vLLM:
+```bash
+export AI_PROVIDER=vllm
+export VLLM_BASE_URL=http://your-vllm-server:8000/v1
+export VLLM_API_KEY=your_api_key  # or "EMPTY" for no auth
+```
+
+3. **Verify Connectivity**:
+```bash
+# Test health check
+curl http://your-vllm-server:8000/v1/models
+
+# Test embedding generation
+curl http://your-vllm-server:8000/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"input": "test", "model": "BAAI/bge-large-en-v1.5"}'
+```
+
+**vLLM Troubleshooting:**
+
+- **Connection Refused**: Check VLLM_BASE_URL includes `/v1` suffix and vLLM server is running
+- **Model Not Found**: Verify model is loaded on vLLM server with `/v1/models` endpoint
+- **Vision Disabled**: Ensure VLLM_VISION_ENABLED=true and vision model is deployed
+- **Slow Performance**: Increase VLLM_MAX_BATCH_SIZE for batch processing
+- **Timeouts**: Adjust VLLM_TIMEOUT based on model size and hardware
 
 ### Vector Database Configuration
 
@@ -257,6 +397,34 @@ export OPENAI_API_KEY=your_key
 docker compose --profile hybrid up -d
 ```
 
+### Cloud vLLM Deployment
+```bash
+# Configure vLLM endpoint
+export AI_PROVIDER=vllm
+export VLLM_BASE_URL=https://your-vllm-endpoint.com/v1
+export VLLM_API_KEY=your_vllm_api_key
+
+# Optional: Enable vision models
+export VLLM_VISION_ENABLED=true
+export VLLM_VISION_MODEL=llava-hf/llava-v1.6-mistral-7b-hf
+
+# Deploy MCP server
+docker compose up -d
+```
+
+### Multi-Modal RAG (vLLM + Vision)
+```bash
+# vLLM for embeddings + vision, OpenAI for LLM
+export EMBEDDING_PROVIDER=vllm
+export LLM_PROVIDER=openai
+export VLLM_BASE_URL=https://your-vllm-endpoint.com/v1
+export VLLM_VISION_ENABLED=true
+export OPENAI_API_KEY=your_openai_key
+
+# Deploy
+docker compose up -d
+```
+
 ## Migration from OpenAI-Only
 
 1. **Update imports** (optional, for direct usage):
@@ -269,7 +437,7 @@ docker compose --profile hybrid up -d
 
 2. **Set provider environment variables**:
    ```bash
-   export AI_PROVIDER=openai  # or ollama, mixed
+   export AI_PROVIDER=openai  # or ollama, vllm, mixed
    ```
 
 3. **No other code changes required** - full backward compatibility maintained
