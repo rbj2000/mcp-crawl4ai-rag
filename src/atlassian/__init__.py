@@ -19,6 +19,13 @@ from .auth import (
 )
 from .config import ConfluenceConfig
 from .confluence_crawler import ConfluenceCrawler, ConfluencePage, CrawlResult, CrawlSummary
+from .confluence_processor import (
+    ConfluenceProcessor,
+    PageProcessingStatus,
+    PageResult,
+    ProcessingResult,
+    ProcessingSummary,
+)
 from .content_converter import ADFConverter, XHTMLConverter, convert_content
 from .factory import AtlassianAuthFactory
 from .http_client import AtlassianHTTPClient
@@ -52,6 +59,12 @@ __all__ = [
     "ConfluencePage",
     "CrawlResult",
     "CrawlSummary",
+    # Confluence processor
+    "ConfluenceProcessor",
+    "PageProcessingStatus",
+    "PageResult",
+    "ProcessingResult",
+    "ProcessingSummary",
     # Factory & client
     "AtlassianAuthFactory",
     "AtlassianHTTPClient",
