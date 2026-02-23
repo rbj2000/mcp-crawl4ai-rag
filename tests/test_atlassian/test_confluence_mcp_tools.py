@@ -75,6 +75,12 @@ _stub_module("src.utils", {
     "search_code_examples": MagicMock(return_value=[]),
 })
 
+# ai_providers (imported by crawl4ai_mcp on this branch)
+_stub_module("ai_providers", {})
+_stub_module("ai_providers.config", {"AIProviderConfig": MagicMock})
+_stub_module("ai_providers.factory", {"AIProviderFactory": MagicMock})
+_stub_module("ai_providers.base", {"RerankingProvider": MagicMock, "RerankingResult": MagicMock})
+
 # neo4j (used by knowledge graph modules)
 _stub_module("neo4j", {"GraphDatabase": MagicMock})
 
