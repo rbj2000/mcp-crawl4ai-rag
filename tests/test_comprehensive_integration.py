@@ -49,22 +49,23 @@ class ComprehensiveIntegrationTestSuite:
         """Set up comprehensive mocking for CI/CD compatibility."""
         # Mock all external dependencies
         mock_patches = []
-        
+
         # Mock OpenAI
         openai_mock = patch('openai.embeddings.create')
         mock_patches.append(openai_mock)
-        
-        # Mock requests for Ollama
-        requests_mock = patch('requests.post')
-        requests_mock.return_value.json.return_value = {
+
+        # Mock requests for Ollama - must start() before configuring return_value
+        requests_patch = patch('requests.post')
+        started_requests_mock = requests_patch.start()
+        started_requests_mock.return_value.json.return_value = {
             "embedding": [0.1] * 768
         }
-        mock_patches.append(requests_mock)
-        
+        mock_patches.append(requests_patch)
+
         # Mock Supabase
         supabase_mock = patch('supabase.create_client')
         mock_patches.append(supabase_mock)
-        
+
         return mock_patches
     
     def test_provider_factory_integration(self):

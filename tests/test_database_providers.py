@@ -1,4 +1,5 @@
 import pytest
+import pytest_asyncio
 import asyncio
 import os
 from typing import List
@@ -9,8 +10,8 @@ from src.database.factory import DatabaseProviderFactory
 
 class DatabaseProviderTestSuite:
     """Comprehensive test suite for all database providers"""
-    
-    @pytest.fixture
+
+    @pytest_asyncio.fixture
     async def provider(self, provider_config) -> VectorDatabaseProvider:
         """Create and initialize a database provider"""
         provider = DatabaseProviderFactory.create_provider(

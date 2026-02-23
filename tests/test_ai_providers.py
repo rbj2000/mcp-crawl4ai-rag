@@ -21,6 +21,7 @@ import threading
 import concurrent.futures
 import json
 from unittest.mock import Mock, patch, AsyncMock, MagicMock, call
+from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 import logging
 
@@ -98,6 +99,23 @@ except ImportError as e:
         def __init__(self, provider, config):
             self.provider = provider
             self.config = config
+
+
+VALID_EMBEDDING_DIMENSIONS = {384, 768, 1024, 1536, 3072}
+
+
+@dataclass
+class EmbeddingConfig:
+    dimensions: int
+    model: str
+
+    def __post_init__(self):
+        if self.dimensions not in VALID_EMBEDDING_DIMENSIONS:
+            raise ValueError(
+                f"Invalid embedding dimensions: {self.dimensions}. "
+                f"Must be one of {sorted(VALID_EMBEDDING_DIMENSIONS)}"
+            )
+
 
 # Custom exceptions
 class DimensionMismatchError(Exception):
