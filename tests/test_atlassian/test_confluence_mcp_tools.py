@@ -247,7 +247,6 @@ class TestCrawlConfluenceSpace:
         processing_result = _make_processing_result()
 
         crawler.crawl_space = AsyncMock(return_value=crawl_result)
-        crawler.max_pages = 100
         processor.process_crawl_result = AsyncMock(return_value=processing_result)
 
         ctx = _build_ctx(crawler=crawler, processor=processor)
@@ -260,7 +259,7 @@ class TestCrawlConfluenceSpace:
         assert data["pages_crawled"] == 1
         assert data["chunks_stored"] == 3
         assert data["source_id"] == "confluence:DEV"
-        crawler.crawl_space.assert_awaited_once_with("DEV")
+        crawler.crawl_space.assert_awaited_once_with("DEV", max_pages=500)
 
     @pytest.mark.asyncio
     async def test_partial_failure(self):
@@ -272,7 +271,6 @@ class TestCrawlConfluenceSpace:
         crawler = AsyncMock()
         processor = AsyncMock()
         crawler.crawl_space = AsyncMock(return_value=crawl_result)
-        crawler.max_pages = 100
         processor.process_crawl_result = AsyncMock(return_value=processing_result)
 
         ctx = _build_ctx(crawler=crawler, processor=processor)
@@ -346,7 +344,6 @@ class TestCrawlConfluencePage:
         crawler = AsyncMock()
         processor = AsyncMock()
         crawler.crawl_page_tree = AsyncMock(return_value=crawl_result)
-        crawler.max_depth = 5
         processing_result = _make_processing_result(pages_processed=2, chunks_stored=6)
         processor.process_crawl_result = AsyncMock(return_value=processing_result)
 
@@ -358,6 +355,7 @@ class TestCrawlConfluencePage:
         assert data["success"] is True
         assert data["include_children"] is True
         assert data["pages_crawled"] == 2
+        crawler.crawl_page_tree.assert_awaited_once_with("101", max_depth=3)
 
     @pytest.mark.asyncio
     async def test_neither_id_nor_url(self):

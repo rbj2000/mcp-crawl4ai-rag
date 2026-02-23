@@ -94,33 +94,52 @@ class ConfluenceCrawler:
         page_id = self._parse_page_id_from_url(url)
         return await self.crawl_page(page_id)
 
-    async def crawl_space(self, space_key: str) -> CrawlResult:
-        """Crawl all pages in a Confluence space (paginated)."""
+    async def crawl_space(self, space_key: str, *, max_pages: Optional[int] = None) -> CrawlResult:
+        """Crawl all pages in a Confluence space (paginated).
+
+        Args:
+            space_key: The Confluence space key.
+            max_pages: Override the instance ``max_pages`` for this call.
+        """
+        effective_max_pages = max_pages if max_pages is not None else self.max_pages
         result = CrawlResult(space_key=space_key)
 
         if self.is_cloud:
-            page_ids = await self._list_space_pages_cloud(space_key)
+            page_ids = await self._list_space_pages_cloud(space_key, max_pages=effective_max_pages)
         else:
-            page_ids = await self._list_space_pages_onprem(space_key)
+            page_ids = await self._list_space_pages_onprem(space_key, max_pages=effective_max_pages)
 
-        for pid in page_ids[: self.max_pages]:
+        for pid in page_ids[: effective_max_pages]:
             if pid in result.summary.page_ids_crawled:
                 continue
             await self._safe_crawl_page(pid, result)
 
         return result
 
-    async def crawl_page_tree(self, root_page_id: str) -> CrawlResult:
+    async def crawl_page_tree(
+        self,
+        root_page_id: str,
+        *,
+        max_pages: Optional[int] = None,
+        max_depth: Optional[int] = None,
+    ) -> CrawlResult:
         """BFS crawl of a page tree starting from *root_page_id*.
 
         Respects ``max_depth`` and ``max_pages``. Skips 403/404 pages.
+
+        Args:
+            root_page_id: The root page to start crawling from.
+            max_pages: Override the instance ``max_pages`` for this call.
+            max_depth: Override the instance ``max_depth`` for this call.
         """
+        effective_max_pages = max_pages if max_pages is not None else self.max_pages
+        effective_max_depth = max_depth if max_depth is not None else self.max_depth
         result = CrawlResult()
         queue: deque = deque()
         queue.append((root_page_id, 0))
         visited: Set[str] = set()
 
-        while queue and len(result.summary.page_ids_crawled) < self.max_pages:
+        while queue and len(result.summary.page_ids_crawled) < effective_max_pages:
             page_id, depth = queue.popleft()
 
             if page_id in visited:
@@ -131,7 +150,7 @@ class ConfluenceCrawler:
             if page is None:
                 continue
 
-            if depth < self.max_depth:
+            if depth < effective_max_depth:
                 children = await self._get_child_page_ids(page_id)
                 for child_id in children:
                     if child_id not in visited:
@@ -151,8 +170,9 @@ class ConfluenceCrawler:
         )
         return self._parse_cloud_page(data)
 
-    async def _list_space_pages_cloud(self, space_key: str) -> List[str]:
+    async def _list_space_pages_cloud(self, space_key: str, *, max_pages: Optional[int] = None) -> List[str]:
         """List page IDs in a Cloud space using cursor pagination."""
+        effective_max_pages = max_pages if max_pages is not None else self.max_pages
         page_ids: List[str] = []
         # First resolve space ID from space key
         spaces_data = await self.client.request(
@@ -167,7 +187,7 @@ class ConfluenceCrawler:
         space_id = results[0]["id"]
 
         cursor: Optional[str] = None
-        while len(page_ids) < self.max_pages:
+        while len(page_ids) < effective_max_pages:
             params: Dict[str, Any] = {"limit": 25}
             if cursor:
                 params["cursor"] = cursor
@@ -252,13 +272,14 @@ class ConfluenceCrawler:
         )
         return self._parse_onprem_page(data)
 
-    async def _list_space_pages_onprem(self, space_key: str) -> List[str]:
+    async def _list_space_pages_onprem(self, space_key: str, *, max_pages: Optional[int] = None) -> List[str]:
         """List page IDs in an On-Prem space using offset pagination."""
+        effective_max_pages = max_pages if max_pages is not None else self.max_pages
         page_ids: List[str] = []
         start = 0
         limit = 25
 
-        while len(page_ids) < self.max_pages:
+        while len(page_ids) < effective_max_pages:
             data = await self.client.request(
                 "GET",
                 "/rest/api/content",

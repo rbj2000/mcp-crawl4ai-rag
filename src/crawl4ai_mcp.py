@@ -289,13 +289,7 @@ if os.getenv("CONFLUENCE_URL"):
                     "error": "Confluence integration not initialized. Check CONFLUENCE_URL and credentials."
                 }, indent=2)
 
-            # Override max_pages for this crawl
-            original_max = confluence_crawler.max_pages
-            confluence_crawler.max_pages = max_pages
-            try:
-                crawl_result = await confluence_crawler.crawl_space(space_key)
-            finally:
-                confluence_crawler.max_pages = original_max
+            crawl_result = await confluence_crawler.crawl_space(space_key, max_pages=max_pages)
 
             processing_result = await confluence_processor.process_crawl_result(crawl_result)
 
@@ -366,19 +360,9 @@ if os.getenv("CONFLUENCE_URL"):
                     crawl_result.summary.pages_succeeded = 1
                     crawl_result.summary.page_ids_crawled.add(page_id)
                 else:
-                    original_depth = confluence_crawler.max_depth
-                    confluence_crawler.max_depth = max_depth
-                    try:
-                        crawl_result = await confluence_crawler.crawl_page_tree(page_id)
-                    finally:
-                        confluence_crawler.max_depth = original_depth
+                    crawl_result = await confluence_crawler.crawl_page_tree(page_id, max_depth=max_depth)
             elif include_children:
-                original_depth = confluence_crawler.max_depth
-                confluence_crawler.max_depth = max_depth
-                try:
-                    crawl_result = await confluence_crawler.crawl_page_tree(page_id)
-                finally:
-                    confluence_crawler.max_depth = original_depth
+                crawl_result = await confluence_crawler.crawl_page_tree(page_id, max_depth=max_depth)
             else:
                 page = await confluence_crawler.crawl_page(page_id)
                 crawl_result = CrawlResult(pages=[page])
