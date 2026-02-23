@@ -120,14 +120,18 @@ class MockRerankingProvider:
         self.default_model = "mock-reranker-v1"
     
     async def rerank_results(
-        self, 
-        query: str, 
-        results: List[Dict[str, Any]], 
+        self,
+        query: str,
+        results: List[Dict[str, Any]],
         model: Optional[str] = None
     ) -> RerankingResult:
         """Mock reranking implementation."""
         self.call_count += 1
-        
+
+        # Check model availability and pull if needed (matches real provider behavior)
+        await self._ensure_model_available(model)
+        await self._pull_model(model)
+
         if not self.connection_healthy:
             raise RerankingError("Connection failed")
         
@@ -178,6 +182,14 @@ class MockRerankingProvider:
             error_message=None if self.connection_healthy else "Connection failed"
         )
     
+    async def _ensure_model_available(self, model: Optional[str] = None) -> bool:
+        """Mock model availability check."""
+        return True
+
+    async def _pull_model(self, model: Optional[str] = None) -> bool:
+        """Mock model pulling."""
+        return True
+
     def supports_reranking(self) -> bool:
         """Mock reranking support check."""
         return True
@@ -518,7 +530,7 @@ class TestOllamaRerankingProvider:
     @pytest.mark.asyncio
     async def test_ollama_model_pulling(self, mock_ollama_provider):
         """Test automatic model pulling."""
-        with patch.object(mock_ollama_provider, '_pull_model_if_needed') as mock_pull:
+        with patch.object(mock_ollama_provider, '_pull_model') as mock_pull:
             mock_pull.return_value = True
             
             query = "test"
