@@ -13,9 +13,11 @@ from ..base import (
     EmbeddingProvider, 
     LLMProvider, 
     HybridAIProvider,
+    RerankingProvider,
     EmbeddingResult, 
     LLMResult, 
     HealthStatus,
+    RerankingResult,
     AIProvider
 )
 
@@ -782,8 +784,8 @@ class OpenAILLMProvider(LLMProvider):
         }
 
 
-class OpenAIProvider(HybridAIProvider):
-    """Combined OpenAI provider for both embeddings and LLM"""
+class OpenAIProvider(HybridAIProvider, RerankingProvider):
+    """Combined OpenAI provider for embeddings, LLM, and similarity-based reranking"""
     
     def __init__(self, config: Dict[str, Any]):
         """Initialize OpenAI hybrid provider"""
@@ -932,3 +934,165 @@ class OpenAIProvider(HybridAIProvider):
                 "total_errors": embedding_metrics["error_count"] + llm_metrics["error_count"]
             }
         }
+    
+    # Reranking methods (similarity-based reranking using embeddings)
+    async def rerank_results(
+        self,
+        query: str,
+        results: List[Dict[str, Any]],
+        model: Optional[str] = None
+    ) -> RerankingResult:
+        """Rerank search results using embedding similarity
+        
+        Args:
+            query: Search query for relevance scoring
+            results: List of search results to rerank
+            model: Optional model override for embeddings
+            
+        Returns:
+            RerankingResult with similarity-based reranked results
+        """
+        # Validate input
+        self.validate_reranking_input(query, results)
+        
+        start_time = time.time()
+        
+        try:
+            # Generate embedding for the query
+            query_embedding_result = await self.embedding_provider.create_embedding(
+                query, model=model
+            )
+            query_embedding = query_embedding_result.embedding
+            
+            # Generate embeddings for all result contents
+            result_texts = []
+            for result in results:
+                content = result.get("content", "")
+                if isinstance(content, str) and content.strip():
+                    result_texts.append(content)
+                else:
+                    result_texts.append("[empty]")  # Placeholder for empty content
+            
+            # Get embeddings for all results in batch
+            result_embedding_results = await self.embedding_provider.create_embeddings_batch(
+                result_texts, model=model
+            )
+            
+            # Calculate cosine similarity scores
+            similarity_scores = []
+            for embedding_result in result_embedding_results:
+                result_embedding = embedding_result.embedding
+                similarity = self._calculate_cosine_similarity(query_embedding, result_embedding)
+                similarity_scores.append(similarity)
+            
+            # Create reranked results with similarity scores
+            reranked_results = []
+            for i, (result, score) in enumerate(zip(results, similarity_scores)):
+                enhanced_result = result.copy()
+                enhanced_result["rerank_score"] = float(score)
+                enhanced_result["original_rank"] = i
+                reranked_results.append(enhanced_result)
+            
+            # Sort by similarity score in descending order
+            reranked_results.sort(key=lambda x: x["rerank_score"], reverse=True)
+            
+            processing_time_ms = (time.time() - start_time) * 1000
+            
+            logger.debug(
+                f"Reranked {len(results)} results using OpenAI similarity in {processing_time_ms:.1f}ms"
+            )
+            
+            return RerankingResult(
+                results=reranked_results,
+                model=query_embedding_result.model,
+                provider=AIProvider.OPENAI.value,
+                rerank_scores=similarity_scores,
+                processing_time_ms=processing_time_ms,
+                metadata={
+                    "embedding_model": query_embedding_result.model,
+                    "embedding_dimensions": query_embedding_result.dimensions,
+                    "reranking_method": "cosine_similarity",
+                    "query_tokens": query_embedding_result.input_tokens,
+                    "total_embeddings_created": len(result_texts) + 1
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"OpenAI similarity-based reranking failed: {e}")
+            raise
+    
+    def _calculate_cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        """Calculate cosine similarity between two vectors
+        
+        Args:
+            vec1: First vector
+            vec2: Second vector
+            
+        Returns:
+            Cosine similarity score between -1 and 1
+        """
+        try:
+            import numpy as np
+            
+            # Convert to numpy arrays for efficient computation
+            a = np.array(vec1)
+            b = np.array(vec2)
+            
+            # Calculate cosine similarity
+            dot_product = np.dot(a, b)
+            norm_a = np.linalg.norm(a)
+            norm_b = np.linalg.norm(b)
+            
+            # Avoid division by zero
+            if norm_a == 0 or norm_b == 0:
+                return 0.0
+            
+            similarity = dot_product / (norm_a * norm_b)
+            return float(similarity)
+            
+        except ImportError:
+            # Fallback to pure Python implementation if numpy not available
+            return self._calculate_cosine_similarity_python(vec1, vec2)
+        except Exception as e:
+            logger.warning(f"Error calculating cosine similarity: {e}")
+            return 0.0
+    
+    def _calculate_cosine_similarity_python(self, vec1: List[float], vec2: List[float]) -> float:
+        """Pure Python implementation of cosine similarity"""
+        try:
+            # Calculate dot product
+            dot_product = sum(a * b for a, b in zip(vec1, vec2))
+            
+            # Calculate norms
+            norm_a = sum(a * a for a in vec1) ** 0.5
+            norm_b = sum(b * b for b in vec2) ** 0.5
+            
+            # Avoid division by zero
+            if norm_a == 0 or norm_b == 0:
+                return 0.0
+            
+            return dot_product / (norm_a * norm_b)
+            
+        except Exception as e:
+            logger.warning(f"Error in Python cosine similarity calculation: {e}")
+            return 0.0
+    
+    def supports_reranking(self) -> bool:
+        """Check if provider supports reranking functionality"""
+        return True  # OpenAI always supports similarity-based reranking via embeddings
+    
+    def get_reranking_models(self) -> List[str]:
+        """Get list of available reranking models"""
+        # For OpenAI, reranking uses embedding models
+        return ["similarity-based"]  # Indicates this is similarity-based, not a specific model
+    
+    @property
+    def default_reranking_model(self) -> str:
+        """Default reranking model for OpenAI provider"""
+        return "similarity-based"
+    
+    @property 
+    def max_results_count(self) -> int:
+        """Maximum number of results that can be reranked at once"""
+        # Limited by OpenAI's batch embedding limits and processing efficiency
+        return min(self.embedding_provider.max_batch_size, 100)

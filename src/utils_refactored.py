@@ -80,10 +80,10 @@ class AIProviderManager:
                 
             except Exception as e:
                 logger.error(f"Failed to initialize AI provider manager: {e}")
-                # Clean up on failure
-                await self.close()
+                # Clean up on failure (without re-acquiring the lock)
+                await self._close_providers()
                 raise
-    
+
     async def _validate_provider_health(self) -> None:
         """Validate that providers are healthy"""
         if self._embedding_provider:
@@ -99,22 +99,26 @@ class AIProviderManager:
     async def close(self) -> None:
         """Close all provider connections"""
         async with self._lock:
-            try:
-                if self._hybrid_provider:
-                    await self._hybrid_provider.close()
-                    self._hybrid_provider = None
-                else:
-                    if self._embedding_provider:
-                        await self._embedding_provider.close()
-                        self._embedding_provider = None
-                    if self._llm_provider:
-                        await self._llm_provider.close()
-                        self._llm_provider = None
-                        
-                self._initialized = False
-                logger.info("AI provider manager closed")
-            except Exception as e:
-                logger.error(f"Error closing AI provider manager: {e}")
+            await self._close_providers()
+
+    async def _close_providers(self) -> None:
+        """Close all provider connections (caller must hold the lock)"""
+        try:
+            if self._hybrid_provider:
+                await self._hybrid_provider.close()
+                self._hybrid_provider = None
+            else:
+                if self._embedding_provider:
+                    await self._embedding_provider.close()
+                    self._embedding_provider = None
+                if self._llm_provider:
+                    await self._llm_provider.close()
+                    self._llm_provider = None
+
+            self._initialized = False
+            logger.info("AI provider manager closed")
+        except Exception as e:
+            logger.error(f"Error closing AI provider manager: {e}")
     
     async def get_embedding_provider(self) -> EmbeddingProvider:
         """Get the embedding provider, initializing if needed"""

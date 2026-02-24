@@ -5,7 +5,7 @@ This guide provides comprehensive documentation for configuring the MCP Crawl4AI
 ## Configuration Overview
 
 The system supports flexible configuration through environment variables, allowing you to:
-- Choose between OpenAI, Ollama, or hybrid AI providers
+- Choose between OpenAI, Ollama, vLLM, or hybrid AI providers
 - Select from multiple vector database options
 - Configure RAG strategies and performance settings
 - Set up monitoring and debugging
@@ -18,19 +18,22 @@ The system supports flexible configuration through environment variables, allowi
 
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
-| `AI_PROVIDER` | `openai`, `ollama`, `mixed` | `openai` | Primary AI provider selection |
-| `EMBEDDING_PROVIDER` | `openai`, `ollama` | Uses `AI_PROVIDER` | Provider for embedding generation |
-| `LLM_PROVIDER` | `openai`, `ollama` | Uses `AI_PROVIDER` | Provider for LLM operations |
+| `AI_PROVIDER` | `openai`, `ollama`, `vllm`, `mixed` | `openai` | Primary AI provider selection |
+| `EMBEDDING_PROVIDER` | `openai`, `ollama`, `vllm` | Uses `AI_PROVIDER` | Provider for embedding generation |
+| `LLM_PROVIDER` | `openai`, `ollama`, `vllm` | Uses `AI_PROVIDER` | Provider for LLM operations |
 
 **Examples:**
 ```bash
 # Single provider
 AI_PROVIDER=openai
 
+# vLLM provider (cloud-deployed)
+AI_PROVIDER=vllm
+
 # Mixed providers (cost optimization)
 AI_PROVIDER=mixed
-EMBEDDING_PROVIDER=openai
-LLM_PROVIDER=ollama
+EMBEDDING_PROVIDER=vllm
+LLM_PROVIDER=openai
 ```
 
 #### OpenAI Configuration
@@ -80,6 +83,61 @@ OLLAMA_MAX_BATCH_SIZE=5
 OLLAMA_TIMEOUT=180.0
 OLLAMA_PULL_MODELS=true
 ```
+
+#### vLLM Configuration
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `VLLM_BASE_URL` | - | Yes | vLLM server endpoint URL (must include `/v1`) |
+| `VLLM_API_KEY` | `EMPTY` | No | vLLM API key (use "EMPTY" for no auth) |
+| `VLLM_TEXT_MODEL` | `meta-llama/Llama-3.1-8B-Instruct` | No | Text generation model |
+| `VLLM_EMBEDDING_MODEL` | `BAAI/bge-large-en-v1.5` | No | Embedding model name |
+| `VLLM_EMBEDDING_DIMENSIONS` | `1024` | No | Embedding vector dimensions |
+| `VLLM_VISION_MODEL` | `llava-hf/llava-v1.6-mistral-7b-hf` | No | Vision model for image understanding |
+| `VLLM_VISION_ENABLED` | `false` | No | Enable vision model capabilities |
+| `VLLM_MAX_BATCH_SIZE` | `32` | No | Max texts per batch request |
+| `VLLM_MAX_RETRIES` | `3` | No | Retry attempts for failed requests |
+| `VLLM_TIMEOUT` | `120.0` | No | Request timeout in seconds |
+
+**Example Configuration:**
+```bash
+# vLLM Endpoint
+VLLM_BASE_URL=https://your-vllm-endpoint.com/v1
+VLLM_API_KEY=your_vllm_api_key
+
+# Text and Embedding Models
+VLLM_TEXT_MODEL=meta-llama/Llama-3.1-8B-Instruct
+VLLM_EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
+VLLM_EMBEDDING_DIMENSIONS=1024
+
+# Vision Model Configuration (optional)
+VLLM_VISION_MODEL=llava-hf/llava-v1.6-mistral-7b-hf
+VLLM_VISION_ENABLED=true
+
+# Performance Tuning
+VLLM_MAX_BATCH_SIZE=32
+VLLM_MAX_RETRIES=3
+VLLM_TIMEOUT=120.0
+```
+
+**Supported Models:**
+
+Text Models:
+- `meta-llama/Llama-3.1-8B-Instruct` (default, 8K context)
+- `meta-llama/Llama-3.1-70B-Instruct` (high quality, 8K context)
+- `mistralai/Mistral-7B-Instruct-v0.3` (fast inference)
+- `mistralai/Mixtral-8x7B-Instruct-v0.1` (MoE architecture)
+
+Embedding Models:
+- `BAAI/bge-large-en-v1.5` (1024 dims, default, best quality)
+- `BAAI/bge-base-en-v1.5` (768 dims, balanced)
+- `sentence-transformers/all-MiniLM-L6-v2` (384 dims, fast)
+
+Vision Models:
+- `llava-hf/llava-v1.6-mistral-7b-hf` (default, high quality captions)
+- `llava-hf/llava-v1.6-vicuna-7b-hf` (alternative base)
+- `Qwen/Qwen2-VL-7B-Instruct` (multilingual support)
+- `microsoft/Phi-3-vision-128k-instruct` (long context)
 
 ### Vector Database Configuration
 
@@ -274,28 +332,28 @@ PORT=8051
 TRANSPORT_MODE=sse
 ```
 
-### Example 3: Cost-Optimized Hybrid (OpenAI Embeddings + Ollama LLM)
+### Example 3: vLLM Cloud Deployment (Text + Vision)
 
 ```bash
-# AI Provider (Mixed)
-AI_PROVIDER=mixed
-EMBEDDING_PROVIDER=openai
-LLM_PROVIDER=ollama
+# AI Provider
+AI_PROVIDER=vllm
+VLLM_BASE_URL=https://your-vllm-endpoint.com/v1
+VLLM_API_KEY=your_vllm_api_key
 
-# OpenAI for embeddings
-OPENAI_API_KEY=sk-your-key
-OPENAI_EMBEDDING_MODEL=text-embedding-3-small
-OPENAI_EMBEDDING_DIMENSIONS=1536
+# Text and Embedding Models
+VLLM_TEXT_MODEL=meta-llama/Llama-3.1-8B-Instruct
+VLLM_EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
+VLLM_EMBEDDING_DIMENSIONS=1024
 
-# Ollama for LLM
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_LLM_MODEL=llama3.2:1b
+# Vision Model (optional)
+VLLM_VISION_ENABLED=true
+VLLM_VISION_MODEL=llava-hf/llava-v1.6-mistral-7b-hf
 
 # Vector Database
 VECTOR_DB_PROVIDER=supabase
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_KEY=your-service-key
-EMBEDDING_DIMENSION=1536
+EMBEDDING_DIMENSION=1024
 
 # RAG Strategies
 USE_CONTEXTUAL_EMBEDDINGS=true
@@ -305,7 +363,39 @@ USE_RERANKING=false
 USE_KNOWLEDGE_GRAPH=false
 ```
 
-### Example 4: Full-Featured Setup (Neo4j + Knowledge Graph)
+### Example 4: Cost-Optimized Hybrid (vLLM Embeddings + OpenAI LLM)
+
+```bash
+# AI Provider (Mixed)
+AI_PROVIDER=mixed
+EMBEDDING_PROVIDER=vllm
+LLM_PROVIDER=openai
+
+# vLLM for embeddings
+VLLM_BASE_URL=https://your-vllm-endpoint.com/v1
+VLLM_API_KEY=your_vllm_api_key
+VLLM_EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
+VLLM_EMBEDDING_DIMENSIONS=1024
+
+# OpenAI for LLM
+OPENAI_API_KEY=sk-your-key
+OPENAI_LLM_MODEL=gpt-4o-mini
+
+# Vector Database
+VECTOR_DB_PROVIDER=supabase
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_KEY=your-service-key
+EMBEDDING_DIMENSION=1024
+
+# RAG Strategies
+USE_CONTEXTUAL_EMBEDDINGS=true
+USE_HYBRID_SEARCH=true
+USE_AGENTIC_RAG=true
+USE_RERANKING=true
+USE_KNOWLEDGE_GRAPH=false
+```
+
+### Example 5: Full-Featured Setup (Neo4j + Knowledge Graph)
 
 ```bash
 # AI Provider
@@ -533,9 +623,9 @@ except Exception as e:
 3. **Provider Not Available**
    ```bash
    Error: Unsupported AI provider: invalid_provider
-   
+
    # Solution: Use valid provider
-   export AI_PROVIDER=openai  # or ollama, mixed
+   export AI_PROVIDER=openai  # or ollama, vllm, mixed
    ```
 
 4. **Connection Timeout**

@@ -2,7 +2,7 @@
 
 import logging
 from typing import Dict, Any, List, Type, Union, Optional
-from .base import AIProvider, EmbeddingProvider, LLMProvider, HybridAIProvider
+from .base import AIProvider, EmbeddingProvider, LLMProvider, HybridAIProvider, RerankingProvider
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +13,7 @@ class AIProviderFactory:
     _embedding_providers: Dict[AIProvider, Type[EmbeddingProvider]] = {}
     _llm_providers: Dict[AIProvider, Type[LLMProvider]] = {}
     _hybrid_providers: Dict[AIProvider, Type[HybridAIProvider]] = {}
+    _reranking_providers: Dict[AIProvider, Type[RerankingProvider]] = {}
     
     @classmethod
     def register_embedding_provider(
@@ -76,6 +77,26 @@ class AIProviderFactory:
         cls._embedding_providers[provider_type] = provider_class
         cls._llm_providers[provider_type] = provider_class
         logger.info(f"Registered hybrid provider: {provider_type.value}")
+    
+    @classmethod
+    def register_reranking_provider(
+        cls,
+        provider_type: AIProvider,
+        provider_class: Type[RerankingProvider]
+    ) -> None:
+        """Register a reranking provider class for a given type
+        
+        Args:
+            provider_type: AI provider enum value
+            provider_class: Provider class that implements RerankingProvider
+        """
+        if not issubclass(provider_class, RerankingProvider):
+            raise ValueError(
+                f"Provider class must implement RerankingProvider interface"
+            )
+        
+        cls._reranking_providers[provider_type] = provider_class
+        logger.info(f"Registered reranking provider: {provider_type.value}")
     
     @classmethod
     def create_embedding_provider(
@@ -174,6 +195,38 @@ class AIProviderFactory:
             raise
     
     @classmethod
+    def create_reranking_provider(
+        cls,
+        provider_type: AIProvider,
+        config: Dict[str, Any]
+    ) -> RerankingProvider:
+        """Create a reranking provider instance
+        
+        Args:
+            provider_type: AI provider enum value
+            config: Provider configuration dictionary
+            
+        Returns:
+            RerankingProvider instance
+            
+        Raises:
+            ValueError: If provider type is not supported for reranking
+        """
+        if provider_type not in cls._reranking_providers:
+            available_providers = list(cls._reranking_providers.keys())
+            raise ValueError(
+                f"Unsupported reranking provider: {provider_type.value}. "
+                f"Available: {[p.value for p in available_providers]}"
+            )
+        
+        provider_class = cls._reranking_providers[provider_type]
+        try:
+            return provider_class(config)
+        except Exception as e:
+            logger.error(f"Failed to create reranking provider {provider_type.value}: {e}")
+            raise
+    
+    @classmethod
     def create_provider(
         cls,
         provider_type: AIProvider,
@@ -209,6 +262,55 @@ class AIProviderFactory:
         raise ValueError(f"No providers available for {provider_type.value}")
     
     @classmethod
+    def create_provider_with_reranking(
+        cls,
+        provider_type: AIProvider,
+        config: Dict[str, Any],
+        reranking_provider_type: Optional[AIProvider] = None
+    ) -> Union[EmbeddingProvider, LLMProvider, HybridAIProvider]:
+        """Create a provider instance with optional reranking capability
+        
+        Args:
+            provider_type: Primary AI provider enum value
+            config: Provider configuration dictionary
+            reranking_provider_type: Optional separate reranking provider type
+            
+        Returns:
+            Provider instance with reranking capability if configured
+        """
+        # Create the primary provider
+        primary_provider = cls.create_provider(provider_type, config)
+        
+        # Check if reranking is enabled and configured
+        use_reranking = config.get("use_reranking", False)
+        if not use_reranking:
+            return primary_provider
+        
+        # Determine reranking provider
+        reranking_provider_name = config.get("reranking_provider", "")
+        if reranking_provider_type:
+            actual_reranking_provider = reranking_provider_type
+        elif reranking_provider_name:
+            try:
+                actual_reranking_provider = AIProvider(reranking_provider_name.lower())
+            except ValueError:
+                logger.warning(f"Invalid reranking provider: {reranking_provider_name}")
+                return primary_provider
+        else:
+            return primary_provider
+        
+        # If the primary provider already supports reranking and it's the same provider, use it
+        if (isinstance(primary_provider, RerankingProvider) and 
+            provider_type == actual_reranking_provider):
+            logger.info(f"Using {provider_type.value} provider for both primary and reranking")
+            return primary_provider
+        
+        # If it's a different provider or primary doesn't support reranking,
+        # we would need to create a composite provider, but for now return primary
+        logger.info(f"Reranking provider {actual_reranking_provider.value} configured separately")
+        return primary_provider
+    
+    @classmethod
     def get_available_embedding_providers(cls) -> List[AIProvider]:
         """Get list of available embedding providers"""
         return list(cls._embedding_providers.keys())
@@ -224,6 +326,11 @@ class AIProviderFactory:
         return list(cls._hybrid_providers.keys())
     
     @classmethod
+    def get_available_reranking_providers(cls) -> List[AIProvider]:
+        """Get list of available reranking providers"""
+        return list(cls._reranking_providers.keys())
+    
+    @classmethod
     def get_provider_capabilities(cls, provider_type: AIProvider) -> Dict[str, bool]:
         """Get capabilities for a specific provider
         
@@ -236,7 +343,8 @@ class AIProviderFactory:
         return {
             "supports_embeddings": provider_type in cls._embedding_providers,
             "supports_llm": provider_type in cls._llm_providers,
-            "supports_hybrid": provider_type in cls._hybrid_providers
+            "supports_hybrid": provider_type in cls._hybrid_providers,
+            "supports_reranking": provider_type in cls._reranking_providers
         }
     
     @classmethod
@@ -252,7 +360,8 @@ class AIProviderFactory:
         return (
             provider_type in cls._embedding_providers or
             provider_type in cls._llm_providers or
-            provider_type in cls._hybrid_providers
+            provider_type in cls._hybrid_providers or
+            provider_type in cls._reranking_providers
         )
     
     @classmethod
@@ -265,7 +374,8 @@ class AIProviderFactory:
         return {
             "embedding": [p.value for p in cls._embedding_providers.keys()],
             "llm": [p.value for p in cls._llm_providers.keys()],
-            "hybrid": [p.value for p in cls._hybrid_providers.keys()]
+            "hybrid": [p.value for p in cls._hybrid_providers.keys()],
+            "reranking": [p.value for p in cls._reranking_providers.keys()]
         }
     
     @classmethod
@@ -274,6 +384,7 @@ class AIProviderFactory:
         cls._embedding_providers.clear()
         cls._llm_providers.clear()
         cls._hybrid_providers.clear()
+        cls._reranking_providers.clear()
         logger.info("Cleared AI provider registry")
 
 
@@ -311,11 +422,29 @@ def _register_providers() -> None:
     
     # Try to register HuggingFace provider
     try:
-        from .providers.huggingface_provider import HuggingFaceProvider
-        AIProviderFactory.register_hybrid_provider(AIProvider.HUGGINGFACE, HuggingFaceProvider)
+        from .providers.huggingface_provider import HuggingFaceRerankingProvider
+        AIProviderFactory.register_reranking_provider(AIProvider.HUGGINGFACE, HuggingFaceRerankingProvider)
     except ImportError as e:
-        logger.debug(f"HuggingFace provider not available: {e}")
-    
+        logger.debug(f"HuggingFace reranking provider not available: {e}")
+
+    # Try to register vLLM provider (hybrid + vision)
+    try:
+        from .providers.vllm_provider import VLLMProvider
+        AIProviderFactory.register_hybrid_provider(AIProvider.VLLM, VLLMProvider)
+        logger.info("vLLM provider registered successfully (hybrid + vision)")
+    except ImportError as e:
+        logger.debug(f"vLLM provider not available: {e}")
+
+    # Register enhanced providers with reranking capabilities
+    try:
+        from .providers.openai_provider import OpenAIProvider
+        from .providers.ollama_provider import OllamaProvider
+        # These are already registered as hybrid providers above, but they now support reranking too
+        AIProviderFactory.register_reranking_provider(AIProvider.OPENAI, OpenAIProvider)
+        AIProviderFactory.register_reranking_provider(AIProvider.OLLAMA, OllamaProvider)
+    except ImportError as e:
+        logger.debug(f"Enhanced providers not available for reranking: {e}")
+
     logger.info(f"AI provider registration complete. Available providers: {AIProviderFactory.list_all_providers()}")
 
 

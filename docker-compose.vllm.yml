@@ -1,0 +1,168 @@
+version: '3.8'
+
+services:
+  # Text LLM Server (Port 8000) - GPUs 0-1
+  vllm-text:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-text-server
+    ports:
+      - "8000:8000"
+    environment:
+      - CUDA_VISIBLE_DEVICES=0,1
+      - NVIDIA_VISIBLE_DEVICES=0,1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    command: >
+      --model meta-llama/Llama-3.1-8B-Instruct
+      --trust-remote-code
+      --gpu-memory-utilization 0.85
+      --max-model-len 16384
+      --host 0.0.0.0
+      --port 8000
+      --tensor-parallel-size 2
+      --dtype float16
+      --disable-log-requests
+      --max-num-batched-tokens 8192
+      --max-num-seqs 256
+    volumes:
+      - ./models:/models
+      - ./logs/vllm-text:/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+
+  # Embedding Server (Port 8001) - GPU 2
+  vllm-embedding:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-embedding-server
+    ports:
+      - "8001:8000"
+    environment:
+      - CUDA_VISIBLE_DEVICES=2
+      - NVIDIA_VISIBLE_DEVICES=2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['2']
+              capabilities: [gpu]
+    command: >
+      --model BAAI/bge-large-en-v1.5
+      --trust-remote-code
+      --gpu-memory-utilization 0.8
+      --host 0.0.0.0
+      --port 8000
+      --tensor-parallel-size 1
+      --dtype float16
+      --disable-log-requests
+      --max-num-batched-tokens 16384
+      --max-num-seqs 512
+    volumes:
+      - ./models:/models
+      - ./logs/vllm-embedding:/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  # Vision Server (Port 8002) - GPUs 3-4
+  vllm-vision:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-vision-server
+    ports:
+      - "8002:8000"
+    environment:
+      - CUDA_VISIBLE_DEVICES=3,4
+      - NVIDIA_VISIBLE_DEVICES=3,4
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['3', '4']
+              capabilities: [gpu]
+    command: >
+      --model llava-hf/llava-v1.6-mistral-7b-hf
+      --trust-remote-code
+      --gpu-memory-utilization 0.8
+      --host 0.0.0.0
+      --port 8000
+      --tensor-parallel-size 2
+      --dtype float16
+      --disable-log-requests
+      --max-num-batched-tokens 4096
+      --max-num-seqs 128
+    volumes:
+      - ./models:/models
+      - ./logs/vllm-vision:/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+
+  # Optional: Nginx Load Balancer (Port 8080)
+  nginx-proxy:
+    image: nginx:alpine
+    container_name: vllm-nginx-proxy
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - vllm-text
+      - vllm-embedding
+      - vllm-vision
+    restart: unless-stopped
+
+  # Optional: Monitoring with Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: vllm-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  # Optional: Grafana Dashboard
+  grafana:
+    image: grafana/grafana:latest
+    container_name: vllm-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  default:
+    name: vllm-network

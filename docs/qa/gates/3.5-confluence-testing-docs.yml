@@ -1,0 +1,58 @@
+schema: 1
+story: "3.5"
+story_title: "Confluence Integration Testing & Documentation"
+gate: PASS
+status_reason: "All critical findings resolved — sync tool tests added, Czech fixtures included, CLAUDE.md scope updated. Three low-severity items remain."
+reviewer: "Quinn (Test Architect)"
+updated: "2026-02-19T18:30:00Z"
+
+waiver: { active: false }
+
+top_issues:
+  - id: "TEST-3.5-004"
+    severity: low
+    finding: "Full incremental sync flow test not explicitly covered (modified-since → selective re-process → update last_synced_at)"
+    suggested_action: "Partially covered by sync MCP tool tests. Can add dedicated integration test later."
+    suggested_owner: dev
+  - id: "TEST-3.5-005"
+    severity: low
+    finding: "Multi-tab page test fixture missing (but multi-tab conversion is 'Future' scope)"
+    suggested_action: "Add when multi-tab conversion is implemented"
+    suggested_owner: dev
+  - id: "TEST-3.5-006"
+    severity: low
+    finding: "No SSL certificate configuration test for AtlassianHTTPClient"
+    suggested_action: "Add edge case test for CONFLUENCE_SSL_VERIFY=false and custom CA bundle"
+    suggested_owner: dev
+
+quality_score: 90
+expires: "2026-03-05T18:00:00Z"
+
+evidence:
+  tests_reviewed: 0
+  risks_identified: 3
+  trace:
+    ac_covered: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    ac_gaps: []
+
+nfr_validation:
+  security: { status: PASS, notes: "Integration tests skip without credentials, no secrets in fixtures" }
+  performance: { status: PASS, notes: "No performance concerns for test/doc story" }
+  reliability: { status: PASS, notes: "Good regression test strategy, conditional skip for integration" }
+  maintainability: { status: PASS, notes: "Well-organized test structure, Czech fixtures, comprehensive fixture directory" }
+
+recommendations:
+  immediate: []
+  future:
+    - action: "Set up free Atlassian Cloud dev instance for CI integration tests"
+      refs: ["docs/stories/3.5.confluence-testing-docs.md"]
+    - action: "Add SSL cert configuration test to auth provider unit tests"
+      refs: ["tests/test_atlassian_auth.py"]
+
+history:
+  - at: "2026-02-19T12:00:00Z"
+    gate: CONCERNS
+    note: "Initial review — missing sync tool tests, no multilingual fixtures, CLAUDE.md scope incomplete"
+  - at: "2026-02-19T18:30:00Z"
+    gate: PASS
+    note: "Re-review — sync tests added, Czech fixtures added, CLAUDE.md lists all 4 tools, attachments removed"

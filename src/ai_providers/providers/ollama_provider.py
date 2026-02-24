@@ -12,9 +12,11 @@ from ..base import (
     EmbeddingProvider, 
     LLMProvider, 
     HybridAIProvider,
+    RerankingProvider,
     EmbeddingResult, 
     LLMResult, 
     HealthStatus,
+    RerankingResult,
     AIProvider
 )
 
@@ -37,6 +39,14 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         "e5-large": {"dimensions": 1024, "size": "1.34GB", "family": "bert"},
         "e5-base": {"dimensions": 768, "size": "438M", "family": "bert"},
         "multilingual-e5-large": {"dimensions": 1024, "size": "2.24GB", "family": "bert"},
+    }
+    
+    # Ollama reranking models (these are separate from embedding models)
+    RERANKING_MODEL_CONFIGS = {
+        "bge-reranker-base": {"size": "278M", "description": "BGE reranking model - base version"},
+        "bge-reranker-large": {"size": "560M", "description": "BGE reranking model - large version"},
+        "ms-marco-MiniLM-L-6-v2": {"size": "22.7M", "description": "MS MARCO MiniLM reranker"},
+        "bge-reranker-v2-m3": {"size": "568M", "description": "BGE reranker v2 multilingual"},
     }
     
     def __init__(self, config: Dict[str, Any]):
@@ -1217,8 +1227,8 @@ class OllamaLLMProvider(LLMProvider):
         }
 
 
-class OllamaProvider(HybridAIProvider):
-    """Combined Ollama provider for both embeddings and LLM"""
+class OllamaProvider(HybridAIProvider, RerankingProvider):
+    """Combined Ollama provider for embeddings, LLM, and reranking"""
     
     def __init__(self, config: Dict[str, Any]):
         """Initialize Ollama hybrid provider"""
@@ -1443,6 +1453,245 @@ class OllamaProvider(HybridAIProvider):
             await self.embedding_provider._pull_model(model)
         elif model in self.llm_provider.MODEL_CONFIGS:
             await self.llm_provider._pull_model(model)
+        elif model in self.embedding_provider.RERANKING_MODEL_CONFIGS:
+            # Reranking models can be pulled using embedding provider's pull method
+            await self.embedding_provider._pull_model(model)
         else:
             # Unknown model, try with LLM provider
             await self.llm_provider._pull_model(model)
+    
+    # Reranking methods (using Ollama reranking models)
+    async def rerank_results(
+        self,
+        query: str,
+        results: List[Dict[str, Any]],
+        model: Optional[str] = None
+    ) -> RerankingResult:
+        """Rerank search results using Ollama reranking models
+        
+        Args:
+            query: Search query for relevance scoring
+            results: List of search results to rerank
+            model: Optional model override for reranking
+            
+        Returns:
+            RerankingResult with reranked results and scores
+        """
+        if not self.session:
+            raise ConnectionError("Session not initialized")
+        
+        # Validate input
+        self.validate_reranking_input(query, results)
+        
+        use_model = model or self.default_reranking_model
+        
+        # Ensure reranking model is available
+        await self._ensure_reranking_model_available(use_model)
+        
+        start_time = time.time()
+        
+        try:
+            # Prepare query-document pairs for reranking
+            rerank_scores = []
+            
+            for result in results:
+                content = result.get("content", "")
+                if isinstance(content, str) and content.strip():
+                    score = await self._rerank_single_pair(query, content, use_model)
+                    rerank_scores.append(score)
+                else:
+                    # Handle empty content with zero score
+                    rerank_scores.append(0.0)
+            
+            # Create reranked results with scores
+            reranked_results = []
+            for i, (result, score) in enumerate(zip(results, rerank_scores)):
+                enhanced_result = result.copy()
+                enhanced_result["rerank_score"] = float(score)
+                enhanced_result["original_rank"] = i
+                reranked_results.append(enhanced_result)
+            
+            # Sort by rerank score in descending order
+            reranked_results.sort(key=lambda x: x["rerank_score"], reverse=True)
+            
+            processing_time_ms = (time.time() - start_time) * 1000
+            
+            logger.debug(
+                f"Reranked {len(results)} results using Ollama model {use_model} "
+                f"in {processing_time_ms:.1f}ms"
+            )
+            
+            return RerankingResult(
+                results=reranked_results,
+                model=use_model,
+                provider=AIProvider.OLLAMA.value,
+                rerank_scores=rerank_scores,
+                processing_time_ms=processing_time_ms,
+                metadata={
+                    "base_url": self.config.get("base_url", "http://localhost:11434"),
+                    "reranking_method": "ollama_api",
+                    "model_info": self.embedding_provider.RERANKING_MODEL_CONFIGS.get(
+                        use_model, {}
+                    ),
+                    "num_pairs": len(results)
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Ollama reranking failed: {e}")
+            raise
+    
+    async def _ensure_reranking_model_available(self, model: str) -> None:
+        """Ensure reranking model is available in Ollama"""
+        try:
+            # Check if model is already available
+            async with self.session.get(f"{self.config.get('base_url', 'http://localhost:11434')}/api/tags") as response:
+                if response.status == 200:
+                    data = await response.json()
+                    available_models = [m["name"] for m in data.get("models", [])]
+                    
+                    # Check if model is available (exact match or with tag)
+                    if any(model in m or m.startswith(model + ":") for m in available_models):
+                        return
+                    
+                    logger.info(f"Reranking model '{model}' not found locally. Available models: {available_models}")
+                    
+                    # Pull the model if auto-pull is enabled
+                    if self.embedding_provider.auto_pull_models:
+                        await self.embedding_provider._pull_model(model)
+                    else:
+                        raise ValueError(
+                            f"Reranking model '{model}' not available and auto_pull_models is disabled. "
+                            f"Available models: {available_models}"
+                        )
+                else:
+                    raise Exception(f"Failed to check available models: HTTP {response.status}")
+                    
+        except Exception as e:
+            logger.error(f"Failed to ensure reranking model availability: {e}")
+            raise
+    
+    async def _rerank_single_pair(self, query: str, document: str, model: str) -> float:
+        """Get reranking score for a single query-document pair
+        
+        Args:
+            query: Search query
+            document: Document content to score
+            model: Reranking model to use
+            
+        Returns:
+            Relevance score (higher means more relevant)
+        """
+        base_url = self.config.get("base_url", "http://localhost:11434")
+        
+        # Different reranking models may use different prompts
+        if "bge-reranker" in model:
+            # BGE reranker models expect a specific format
+            prompt = f"Query: {query}\nDocument: {document}\nRelevance:"
+        else:
+            # Generic reranking prompt
+            prompt = f"Determine the relevance of the following document to the query. Return a score between 0 and 1.\n\nQuery: {query}\n\nDocument: {document}\n\nRelevance score:"
+        
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": 0.0,  # Deterministic scoring
+                "num_predict": 10,   # Short response expected
+                "stop": ["\n", "\n\n"]
+            }
+        }
+        
+        try:
+            async with self.session.post(
+                f"{base_url}/api/generate",
+                json=payload,
+                timeout=ClientTimeout(total=30.0)
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    response_text = data.get("response", "").strip()
+                    
+                    # Parse the score from the response
+                    score = self._parse_reranking_score(response_text)
+                    return score
+                else:
+                    error_text = await response.text()
+                    logger.warning(f"Reranking request failed: HTTP {response.status} - {error_text}")
+                    return 0.0
+                    
+        except asyncio.TimeoutError:
+            logger.warning(f"Reranking request timed out for model {model}")
+            return 0.0
+        except Exception as e:
+            logger.warning(f"Error in reranking request: {e}")
+            return 0.0
+    
+    def _parse_reranking_score(self, response_text: str) -> float:
+        """Parse reranking score from model response
+        
+        Args:
+            response_text: Raw response from reranking model
+            
+        Returns:
+            Normalized score between 0.0 and 1.0
+        """
+        try:
+            # Try to extract a numeric score
+            import re
+            
+            # Look for decimal numbers in the response
+            numbers = re.findall(r'\d*\.?\d+', response_text)
+            
+            if numbers:
+                score = float(numbers[0])
+                
+                # Normalize score to 0-1 range
+                if score > 1.0:
+                    # If score is > 1, assume it's on a different scale (like 0-10)
+                    if score <= 10:
+                        score = score / 10.0
+                    elif score <= 100:
+                        score = score / 100.0
+                    else:
+                        score = min(score / 1000.0, 1.0)
+                
+                return max(0.0, min(1.0, score))
+            
+            # If no numbers found, try to interpret text
+            response_lower = response_text.lower()
+            if any(word in response_lower for word in ["high", "very relevant", "excellent"]):
+                return 0.9
+            elif any(word in response_lower for word in ["good", "relevant", "moderate"]):
+                return 0.7
+            elif any(word in response_lower for word in ["low", "poor", "irrelevant"]):
+                return 0.3
+            else:
+                return 0.5  # Default neutral score
+                
+        except Exception as e:
+            logger.warning(f"Error parsing reranking score from '{response_text}': {e}")
+            return 0.0
+    
+    def supports_reranking(self) -> bool:
+        """Check if provider supports reranking functionality"""
+        use_reranking = self.config.get("use_reranking", False)
+        reranking_provider = self.config.get("reranking_provider", "")
+        return use_reranking and reranking_provider == "ollama"
+    
+    def get_reranking_models(self) -> List[str]:
+        """Get list of available reranking models"""
+        return list(self.embedding_provider.RERANKING_MODEL_CONFIGS.keys())
+    
+    @property
+    def default_reranking_model(self) -> str:
+        """Default reranking model for Ollama provider"""
+        return "bge-reranker-base"
+    
+    @property
+    def max_results_count(self) -> int:
+        """Maximum number of results that can be reranked at once"""
+        # Ollama reranking is done one pair at a time, so we can handle more results
+        # but we need to be mindful of processing time
+        return self.config.get("reranking_max_results", 50)
