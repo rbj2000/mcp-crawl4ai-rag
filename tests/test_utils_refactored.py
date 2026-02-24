@@ -113,10 +113,12 @@ class MockEmbeddingProvider(EmbeddingProvider):
     async def create_embedding(self, text: str, model: Optional[str] = None) -> EmbeddingResult:
         if self.should_fail:
             raise Exception("Mock embedding failure")
-            
+
         self.call_count += 1
+        # Return zero vector for empty input
+        embedding = [0.0] * self.dimensions if not text or not text.strip() else [0.1] * self.dimensions
         return EmbeddingResult(
-            embedding=[0.1] * self.dimensions,
+            embedding=embedding,
             dimensions=self.dimensions,
             model=model or self.model
         )
